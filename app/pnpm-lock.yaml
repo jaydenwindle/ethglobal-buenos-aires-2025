@@ -41,6 +41,12 @@ importers:
       expo-crypto:
         specifier: ^14.1.5
         version: 14.1.5(expo@53.0.24(@babel/core@7.28.5)(bufferutil@4.0.9)(react-native@0.79.6(@babel/core@7.28.5)(@types/react@19.1.0)(bufferutil@4.0.9)(react@19.1.0)(utf-8-validate@5.0.10))(react@19.1.0)(utf-8-validate@5.0.10))
+      expo-file-system:
+        specifier: ^18.1.11
+        version: 18.1.11(expo@53.0.24(@babel/core@7.28.5)(bufferutil@4.0.9)(react-native@0.79.6(@babel/core@7.28.5)(@types/react@19.1.0)(bufferutil@4.0.9)(react@19.1.0)(utf-8-validate@5.0.10))(react@19.1.0)(utf-8-validate@5.0.10))(react-native@0.79.6(@babel/core@7.28.5)(@types/react@19.1.0)(bufferutil@4.0.9)(react@19.1.0)(utf-8-validate@5.0.10))
+      expo-network:
+        specifier: ^7.1.5
+        version: 7.1.5(expo@53.0.24(@babel/core@7.28.5)(bufferutil@4.0.9)(react-native@0.79.6(@babel/core@7.28.5)(@types/react@19.1.0)(bufferutil@4.0.9)(react@19.1.0)(utf-8-validate@5.0.10))(react@19.1.0)(utf-8-validate@5.0.10))(react@19.1.0)
       expo-secure-store:
         specifier: ^15.0.7
         version: 15.0.7(expo@53.0.24(@babel/core@7.28.5)(bufferutil@4.0.9)(react-native@0.79.6(@babel/core@7.28.5)(@types/react@19.1.0)(bufferutil@4.0.9)(react@19.1.0)(utf-8-validate@5.0.10))(react@19.1.0)(utf-8-validate@5.0.10))
@@ -2414,6 +2420,12 @@ packages:
 
   expo-modules-core@2.5.0:
     resolution: {integrity: sha512-aIbQxZE2vdCKsolQUl6Q9Farlf8tjh/ROR4hfN1qT7QBGPl1XrJGnaOKkcgYaGrlzCPg/7IBe0Np67GzKMZKKQ==}
+
+  expo-network@7.1.5:
+    resolution: {integrity: sha512-VNgxNe3Y1xo00zMzFy7Q+35qWnSJnjZ9RRLtW3Nu/ITtv9ak+BIghfWj1PANLYB3ZkWzY5656R1YIkkRkeDukg==}
+    peerDependencies:
+      expo: '*'
+      react: '*'
 
   expo-secure-store@15.0.7:
     resolution: {integrity: sha512-9q7+G1Zxr5P6J5NRIlm86KulvmYwc6UnQlYPjQLDu1drDnerz6AT6l884dPu29HgtDTn4rR0heYeeGFhMKM7/Q==}
@@ -8454,6 +8466,11 @@ snapshots:
   expo-modules-core@2.5.0:
     dependencies:
       invariant: 2.2.4
+
+  expo-network@7.1.5(expo@53.0.24(@babel/core@7.28.5)(bufferutil@4.0.9)(react-native@0.79.6(@babel/core@7.28.5)(@types/react@19.1.0)(bufferutil@4.0.9)(react@19.1.0)(utf-8-validate@5.0.10))(react@19.1.0)(utf-8-validate@5.0.10))(react@19.1.0):
+    dependencies:
+      expo: 53.0.24(@babel/core@7.28.5)(bufferutil@4.0.9)(react-native@0.79.6(@babel/core@7.28.5)(@types/react@19.1.0)(bufferutil@4.0.9)(react@19.1.0)(utf-8-validate@5.0.10))(react@19.1.0)(utf-8-validate@5.0.10)
+      react: 19.1.0
 
   expo-secure-store@15.0.7(expo@53.0.24(@babel/core@7.28.5)(bufferutil@4.0.9)(react-native@0.79.6(@babel/core@7.28.5)(@types/react@19.1.0)(bufferutil@4.0.9)(react@19.1.0)(utf-8-validate@5.0.10))(react@19.1.0)(utf-8-validate@5.0.10)):
     dependencies:
