@@ -3,13 +3,14 @@ import { BleManager, Device, State } from "react-native-ble-plx";
 import { Alert } from "react-native";
 import { Buffer } from "buffer";
 import WifiManager from "react-native-wifi-reborn";
+import { logger } from "../services/logger";
 
 // UUIDs from the ESP32 device (Nordic UART Service)
 const SERVICE_UUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E";
 const RX_CHARACTERISTIC_UUID = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"; // Write to ESP32
 const TX_CHARACTERISTIC_UUID = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"; // Notify from ESP32
 
-const DEVICE_NAME = "ESP32-SD-WiFi";
+const DEVICE_NAME = "digicam-001";
 
 export interface BLELog {
   timestamp: string;
@@ -35,6 +36,19 @@ export const useBLE = () => {
     setLogs((prev) => [...prev, { timestamp, type, message }]);
     console.log(`[BLE ${type}] ${message}`);
   };
+
+  // Subscribe to logger events
+  useEffect(() => {
+    const handleLoggerEvent = (log: { timestamp: string; type: BLELog["type"]; message: string }) => {
+      setLogs((prev) => [...prev, log]);
+    };
+
+    logger.addListener(handleLoggerEvent);
+
+    return () => {
+      logger.removeListener(handleLoggerEvent);
+    };
+  }, []);
 
   // Initialize BLE Manager
   useEffect(() => {
@@ -294,7 +308,14 @@ export const useBLE = () => {
         await device.cancelConnection();
         setDevice(null);
         setIsConnected(false);
+
+        // Clear WiFi credentials and connection state
+        setWifiCredentials(null);
+        setWifiConnected(false);
+        setWifiConnecting(false);
+
         addLog("success", "Disconnected successfully");
+        addLog("info", "WiFi credentials cleared");
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : "Unknown error";
         addLog("error", `Disconnect failed: ${errorMessage}`);

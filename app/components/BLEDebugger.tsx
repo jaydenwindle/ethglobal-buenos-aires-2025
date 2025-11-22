@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import {
   View,
   Text,
@@ -6,11 +6,14 @@ import {
   ScrollView,
   StyleSheet,
   ActivityIndicator,
+  Alert,
+  Linking,
 } from "react-native";
 import { useBLE } from "../hooks/useBLE";
 import { useTheme } from "../theme/ThemeContext";
+import { FileBrowser } from "./FileBrowser";
 
-export const BLEStatus = () => {
+export const BLEDebugger = () => {
   const {
     isConnected,
     isScanning,
@@ -28,6 +31,8 @@ export const BLEStatus = () => {
   } = useBLE();
 
   const { colors } = useTheme();
+  const [showFileBrowser, setShowFileBrowser] = useState(false);
+  const [hasNetworkPermission, setHasNetworkPermission] = useState(false);
 
   const handleStatusCommand = () => {
     sendCommand("STATUS");
@@ -46,6 +51,45 @@ export const BLEStatus = () => {
       connectToWifi(wifiCredentials.ssid, wifiCredentials.password);
     }
   };
+
+  const requestNetworkPermission = async () => {
+    if (!deviceIpAddress) {
+      Alert.alert("Error", "No device IP address available. Please connect to WiFi first.");
+      return;
+    }
+
+    try {
+      // Make a test request to trigger the local network permission prompt on iOS
+      // This will show the "Allow app to find and connect to devices on your local network" dialog
+      const testUrl = `http://${deviceIpAddress}/wifistatus`;
+
+      await fetch(testUrl, {
+        method: 'GET',
+      });
+
+      // If we got here, we have network permission
+      setHasNetworkPermission(true);
+      setShowFileBrowser(true);
+    } catch (error) {
+      // Even if request fails, still show the file browser
+      // The user may have granted permission but device isn't responding yet
+      setHasNetworkPermission(true);
+      setShowFileBrowser(true);
+    }
+  };
+
+  const handleBrowseFiles = async () => {
+    // Trigger local network permission prompt before showing file browser
+    await requestNetworkPermission();
+  };
+
+  const handleCloseBrowser = () => {
+    setShowFileBrowser(false);
+  };
+
+  // Extract IP address from WiFi credentials SSID if connected
+  // Assuming the ESP32 AP has a known IP (typically 192.168.4.1 for ESP32 AP mode)
+  const deviceIpAddress = wifiConnected ? "192.168.4.1" : null;
 
   const createStyles = () =>
     StyleSheet.create({
@@ -262,6 +306,25 @@ export const BLEStatus = () => {
     return `Bluetooth ${bluetoothState}`;
   };
 
+  // Show file browser if WiFi is connected and user requested it
+  if (showFileBrowser && deviceIpAddress) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.scrollContainer}>
+          <View style={styles.header}>
+            <TouchableOpacity onPress={handleCloseBrowser} style={{ marginRight: 12 }}>
+              <Text style={{ fontSize: 18, color: colors.accent, fontWeight: "600" }}>←</Text>
+            </TouchableOpacity>
+            <Text style={styles.title}>SD Card Files</Text>
+          </View>
+          <View style={{ flex: 1 }}>
+            <FileBrowser ipAddress={deviceIpAddress} />
+          </View>
+        </View>
+      </View>
+    );
+  }
+
   return (
     <ScrollView
       style={styles.container}
@@ -338,7 +401,7 @@ export const BLEStatus = () => {
             <Text style={styles.wifiStatusLabel}>Status: </Text>
             {wifiConnecting ? "Connecting..." : wifiConnected ? "Connected ✓" : "Not connected"}
           </Text>
-          {!wifiConnected && (
+          {!wifiConnected ? (
             <TouchableOpacity
               style={[styles.button, { marginTop: 12 }]}
               onPress={handleConnectWifi}
@@ -349,6 +412,13 @@ export const BLEStatus = () => {
               ) : (
                 <Text style={styles.buttonText}>Connect to WiFi</Text>
               )}
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity
+              style={[styles.button, styles.buttonSuccess, { marginTop: 12 }]}
+              onPress={handleBrowseFiles}
+            >
+              <Text style={styles.buttonText}>Browse SD Card Files</Text>
             </TouchableOpacity>
           )}
         </View>

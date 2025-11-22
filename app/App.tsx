@@ -11,7 +11,7 @@ import { StyleSheet, Text, View, Alert, SafeAreaView } from "react-native";
 import { ThemeProvider, useTheme } from "./theme/ThemeContext";
 import { SignInForm } from "./components/SignInForm";
 import { DarkModeToggle } from "./components/DarkModeToggle";
-import { BLEStatus } from "./components/BLEStatus";
+import { BLEDebugger } from "./components/BLEDebugger";
 
 const cdpConfig = {
   projectId: process.env.EXPO_PUBLIC_CDP_PROJECT_ID,
@@ -140,7 +140,7 @@ function CDPApp() {
         {!isSignedIn ? (
           <SignInForm />
         ) : (
-          <BLEStatus />
+          <BLEDebugger />
         )}
       </View>
 
