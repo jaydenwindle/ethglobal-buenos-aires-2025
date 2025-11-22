@@ -319,15 +319,15 @@ void FSWebServer::onHttpDownload(AsyncWebServerRequest *request) {
     // Check for chunked download parameters
     bool isChunked = request->hasParam("chunk");
     int chunkNumber = 0;
-    int chunkSize = 8192; // Default 8KB chunks
+    int chunkSize = 16384 * 4; // Default 16KB chunks - optimal for ESP32
     
     if (isChunked) {
       chunkNumber = request->getParam("chunk")->value().toInt();
       if (request->hasParam("size")) {
         chunkSize = request->getParam("size")->value().toInt();
         // Limit chunk size to reasonable range
-        if (chunkSize < 1024) chunkSize = 1024;
-        if (chunkSize > 32768) chunkSize = 32768;
+        // if (chunkSize < 1024) chunkSize = 1024;
+        // if (chunkSize > 32768) chunkSize = 32768;
       }
       SERIAL_ECHO("Mode: Chunked - chunk #");
       SERIAL_ECHO(String(chunkNumber).c_str());

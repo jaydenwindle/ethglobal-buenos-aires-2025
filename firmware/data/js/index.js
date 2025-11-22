@@ -625,17 +625,21 @@ function onClickUpdateList() {
 
 function loadImageProgressive(filename, previewDiv) {
     var filePath = filename.startsWith('/') ? filename : '/' + filename;
-    var chunkSize = 8192 * 16; // 8KB x 16 chunks
+    var chunkSize = 16384 * 4; // 16KB chunks - optimal for ESP32
+    var imageElement = null;
+    var currentBlobUrl = null;
     var chunks = [];
     var currentChunk = 0;
     var totalChunks = null;
     
     addDebugLog('Starting progressive load for: ' + filename);
     
-    // Create progress container
+    // Create progress container with image placeholder
     var safeId = filename.replace(/[^a-zA-Z0-9]/g, '_');
-    previewDiv.innerHTML = '<div style="padding: 20px; text-align: center; background: #f5f5f5; border-radius: 8px; margin: 10px 0;">' +
-        '<div style="margin-bottom: 10px;">Loading image...</div>' +
+    previewDiv.innerHTML = '<div style="padding: 15px; text-align: center; background: #f5f5f5; border-radius: 8px; margin: 10px 0;">' +
+        '<div id="img-container-' + safeId + '" style="min-height: 200px; display: flex; align-items: center; justify-content: center; margin-bottom: 10px;">' +
+        '<div style="color: #999;">Loading...</div>' +
+        '</div>' +
         '<div style="background: #ddd; height: 20px; border-radius: 10px; overflow: hidden;">' +
         '<div id="progress-' + safeId + '" style="background: #4CAF50; height: 100%; width: 0%; transition: width 0.3s;"></div>' +
         '</div>' +
@@ -643,8 +647,48 @@ function loadImageProgressive(filename, previewDiv) {
         '</div>';
     previewDiv.style.display = 'block';
     
+    var imgContainer = document.getElementById('img-container-' + safeId);
     var progressBar = document.getElementById('progress-' + safeId);
     var statusText = document.getElementById('status-' + safeId);
+    
+    function updateImageDisplay() {
+        // Combine chunks loaded so far
+        var totalSize = 0;
+        for (var i = 0; i < chunks.length; i++) {
+            totalSize += chunks[i].length;
+        }
+        
+        var combined = new Uint8Array(totalSize);
+        var offset = 0;
+        for (var i = 0; i < chunks.length; i++) {
+            combined.set(chunks[i], offset);
+            offset += chunks[i].length;
+        }
+        
+        // Create blob and update image
+        var blob = new Blob([combined], { type: getContentType(filename) });
+        var newBlobUrl = URL.createObjectURL(blob);
+        
+        if (!imageElement) {
+            // Create image element on first chunk
+            imageElement = document.createElement('img');
+            imageElement.style.maxWidth = '100%';
+            imageElement.style.maxHeight = '600px';
+            imageElement.style.borderRadius = '4px';
+            imageElement.style.boxShadow = '0 2px 8px rgba(0,0,0,0.1)';
+            imgContainer.innerHTML = '';
+            imgContainer.appendChild(imageElement);
+        }
+        
+        // Revoke old blob URL to free memory
+        if (currentBlobUrl) {
+            URL.revokeObjectURL(currentBlobUrl);
+        }
+        currentBlobUrl = newBlobUrl;
+        
+        // Update image source - browser will progressively render
+        imageElement.src = newBlobUrl;
+    }
     
     function loadNextChunk() {
         var chunkUrl = '/cat?path=' + encodeURIComponent(filePath) + '&chunk=' + currentChunk + '&size=' + chunkSize;
@@ -666,19 +710,23 @@ function loadImageProgressive(filename, previewDiv) {
                 
                 chunks.push(new Uint8Array(xhr.response));
                 
+                // Update progress bar
                 var progress = totalChunks ? ((currentChunk + 1) / totalChunks * 100) : 0;
                 if (progressBar) progressBar.style.width = progress + '%';
                 if (statusText) statusText.textContent = 'Chunk ' + (currentChunk + 1) + (totalChunks ? ' of ' + totalChunks : '') + ' (' + Math.round(progress) + '%)';
+                
+                // Update image display progressively
+                updateImageDisplay();
                 
                 currentChunk++;
                 
                 if (xhr.status === 206 && (!totalChunks || currentChunk < totalChunks)) {
                     loadNextChunk();
                 } else {
-                    combineAndDisplay();
+                    finishDisplay();
                 }
             } else if (xhr.status === 416) {
-                combineAndDisplay();
+                finishDisplay();
             } else {
                 addDebugLog('Chunk load error: HTTP ' + xhr.status);
                 previewDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: red; background: #ffe6e6; border-radius: 8px; margin: 10px 0;">' +
@@ -699,29 +747,21 @@ function loadImageProgressive(filename, previewDiv) {
         xhr.send();
     }
     
-    function combineAndDisplay() {
+    function finishDisplay() {
         var totalSize = 0;
         for (var i = 0; i < chunks.length; i++) {
             totalSize += chunks[i].length;
         }
         
-        addDebugLog('Combining ' + chunks.length + ' chunks, total: ' + totalSize + ' bytes');
+        addDebugLog('Loading complete: ' + chunks.length + ' chunks, total: ' + totalSize + ' bytes');
         
-        var combined = new Uint8Array(totalSize);
-        var offset = 0;
-        for (var i = 0; i < chunks.length; i++) {
-            combined.set(chunks[i], offset);
-            offset += chunks[i].length;
+        // Update status to show completion
+        if (statusText) {
+            statusText.textContent = 'Complete! ' + filename + ' (' + totalSize + ' bytes, ' + chunks.length + ' chunks)';
+            statusText.style.color = '#4CAF50';
         }
         
-        var blob = new Blob([combined], { type: getContentType(filename) });
-        var objectUrl = URL.createObjectURL(blob);
-        
-        previewDiv.innerHTML = '<div style="padding: 15px; text-align: center; background: #f5f5f5; border-radius: 8px; margin: 10px 0;">' +
-            '<img src="' + objectUrl + '" style="max-width: 100%; max-height: 600px; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);" />' +
-            '<div style="margin-top: 10px; font-size: 0.85rem; color: #666;">Loaded: ' + filename + ' (' + totalSize + ' bytes, ' + chunks.length + ' chunks)</div>' +
-            '</div>';
-        
+        // Image is already displayed progressively, just clean up
         addDebugLog('Image displayed');
     }
     
