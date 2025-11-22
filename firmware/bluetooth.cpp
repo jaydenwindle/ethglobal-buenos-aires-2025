@@ -11,6 +11,7 @@ public:
     
     void onConnect(NimBLEServer* pServer) {
         parent->deviceConnected = true;
+        parent->justConnected = true;
         DEBUG_LOG("BLE Client connected\n");
     }
     
@@ -42,6 +43,7 @@ BluetoothManager::BluetoothManager() {
     pTxCharacteristic = nullptr;
     pRxCharacteristic = nullptr;
     deviceConnected = false;
+    justConnected = false;
     enabled = false;
     rxBuffer = "";
 }
@@ -139,4 +141,12 @@ String BluetoothManager::readString() {
 
 void BluetoothManager::flush() {
     rxBuffer = "";
+}
+
+bool BluetoothManager::checkAndClearJustConnected() {
+    if (justConnected) {
+        justConnected = false;
+        return true;
+    }
+    return false;
 }

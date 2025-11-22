@@ -31,10 +31,10 @@
 
 // ============================================
 // ACCESS POINT CONFIGURATION
-// Change these values to customize your AP
+// AP credentials are now loaded from config system
+// To change: edit SETUP.INI file with AP_SSID and AP_PASSWORD
+// Or defaults from config.h will be used
 // ============================================
-const char* AP_SSID     = "PERMA";              // AP WiFi name
-const char* AP_PASSWORD = "FuturePrimitive";    // AP WiFi password (min 8 chars, or empty "" for open network)
 IPAddress   AP_local_ip(192, 168, 4, 1);        // AP IP address
 IPAddress   AP_gateway(192, 168, 4, 1);         // AP gateway (usually same as IP)
 IPAddress   AP_subnet(255, 255, 255, 0);        // AP subnet mask
@@ -181,6 +181,10 @@ bool Network::isSTAmode() {
 void Network::startSoftAP() {
   WiFi.mode(WIFI_AP_STA);
   WiFi.softAPConfig(AP_local_ip, AP_gateway, AP_subnet);
+  
+  // Get AP credentials from config (single source of truth)
+  const char* AP_SSID = config.apSSID();
+  const char* AP_PASSWORD = config.apPassword();
   
   // Start AP with or without password
   bool apStarted;

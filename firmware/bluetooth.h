@@ -25,12 +25,14 @@ public:
     int read();
     String readString();
     void flush();
+    bool checkAndClearJustConnected();
     
 private:
     NimBLEServer* pServer;
     NimBLECharacteristic* pTxCharacteristic;
     NimBLECharacteristic* pRxCharacteristic;
     bool deviceConnected;
+    bool justConnected;
     bool enabled;
     String rxBuffer;
     

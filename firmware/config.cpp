@@ -13,6 +13,10 @@ int Config::loadFS() {
 		return -1;
 	}
 
+  // Initialize AP credentials with defaults
+  strncpy(data.ap_ssid, DEFAULT_AP_SSID, WIFI_SSID_LEN);
+  strncpy(data.ap_psw, DEFAULT_AP_PASSWORD, WIFI_PASSWD_LEN);
+
   // Get SSID and PASSWORD from file
   int rst = 0,step = 0;
   String buffer,sKEY,sValue;
@@ -20,20 +24,21 @@ int Config::loadFS() {
     buffer = file.readStringUntil('\n');
     if(buffer.length() == 0) continue; // Empty line
     buffer.replace("\r", ""); // Delete all CR
+    
+    // Skip comment lines
+    if(buffer.startsWith("#")) continue;
+    
     int iS = buffer.indexOf('='); // Get the seperator
     if(iS < 0) continue; // Bad line
     sKEY = buffer.substring(0,iS);
     sValue = buffer.substring(iS+1);
+    
     if(sKEY == "SSID") {
       SERIAL_ECHOLN("INI file : SSID found");
       if(sValue.length()>0) {
         memset(data.ssid,'\0',WIFI_SSID_LEN);
         sValue.toCharArray(data.ssid,WIFI_SSID_LEN);
         step++;
-      }
-      else {
-        rst = -2;
-        goto FAIL;
       }
     }
     else if(sKEY == "PASSWORD") {
@@ -43,28 +48,46 @@ int Config::loadFS() {
         sValue.toCharArray(data.psw,WIFI_PASSWD_LEN);
         step++;
       }
-      else {
-        rst = -3;
-        goto FAIL;
+    }
+    else if(sKEY == "AP_SSID") {
+      SERIAL_ECHOLN("INI file : AP_SSID found");
+      if(sValue.length()>0) {
+        memset(data.ap_ssid,'\0',WIFI_SSID_LEN);
+        sValue.toCharArray(data.ap_ssid,WIFI_SSID_LEN);
       }
     }
-    else continue; // Bad line
+    else if(sKEY == "AP_PASSWORD") {
+      SERIAL_ECHOLN("INI file : AP_PASSWORD found");
+      if(sValue.length()>0) {
+        memset(data.ap_psw,'\0',WIFI_PASSWD_LEN);
+        sValue.toCharArray(data.ap_psw,WIFI_PASSWD_LEN);
+      }
+    }
   }
-  if(step != 2) { // We miss ssid or password
-    //memset(data,) // TODO: do we need to empty the data?
-    SERIAL_ECHOLN("Please check your SSDI or PASSWORD in ini file");
-    rst = -4;
-    goto FAIL;
-  }
-
-  FAIL:
+  
   file.close();
+  
+  // Station credentials are optional - if not provided, device will start in AP mode
+  if(step == 2) {
+    SERIAL_ECHOLN("Station credentials loaded from INI file");
+    return 0; // Success - will try to connect to station
+  } else if(step == 0) {
+    SERIAL_ECHOLN("No station credentials in INI file - will start in AP mode");
+    return -1; // No station credentials - start AP mode
+  } else {
+    SERIAL_ECHOLN("Incomplete station credentials in INI file");
+    return -4; // Incomplete credentials
+  }
 
   return rst;
 }
 
 unsigned char Config::load(FS* fs) {
   _fs = fs;
+
+  // Initialize AP credentials with defaults first
+  strncpy(data.ap_ssid, DEFAULT_AP_SSID, WIFI_SSID_LEN);
+  strncpy(data.ap_psw, DEFAULT_AP_PASSWORD, WIFI_PASSWD_LEN);
 
   SERIAL_ECHOLN("Going to load config from EEPROM");
 
@@ -78,6 +101,13 @@ unsigned char Config::load(FS* fs) {
 
   if(data.flag) {
     SERIAL_ECHOLN("Going to use the old network config");
+    // Ensure AP credentials are set if not in EEPROM
+    if(strlen(data.ap_ssid) == 0) {
+      strncpy(data.ap_ssid, DEFAULT_AP_SSID, WIFI_SSID_LEN);
+    }
+    if(strlen(data.ap_psw) == 0) {
+      strncpy(data.ap_psw, DEFAULT_AP_PASSWORD, WIFI_PASSWD_LEN);
+    }
     return data.flag;
   }
 
@@ -106,6 +136,24 @@ char* Config::password() {
 void Config::password(char* password) {
   if(password == NULL) return;
   strncpy(data.psw,password,WIFI_PASSWD_LEN);
+}
+
+char* Config::apSSID() {
+  return data.ap_ssid;
+}
+
+void Config::apSSID(char* ssid) {
+  if(ssid == NULL) return;
+  strncpy(data.ap_ssid,ssid,WIFI_SSID_LEN);
+}
+
+char* Config::apPassword() {
+  return data.ap_psw;
+}
+
+void Config::apPassword(char* password) {
+  if(password == NULL) return;
+  strncpy(data.ap_psw,password,WIFI_PASSWD_LEN);
 }
 
 void Config::save(const char*ssid,const char*password) {

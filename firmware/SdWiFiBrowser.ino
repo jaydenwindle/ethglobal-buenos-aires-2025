@@ -52,7 +52,6 @@ void enterSleepMode() {
   if (sleepMode) return;
   
   SERIAL_ECHOLN("Entering light sleep mode...");
-  BT.write("Entering sleep mode. Send 'WAKE' to wake up.\n");
   
   // Disable WiFi to save power
   if (wifiEnabled) {
@@ -68,6 +67,7 @@ void enterSleepMode() {
   esp_pm_configure(&pm_config);
   
   sleepMode = true;
+  BT.write("zzz\n");
   SERIAL_ECHOLN("Sleep mode active. Bluetooth remains active for wake command.");
 }
 
@@ -86,7 +86,8 @@ void exitSleepMode() {
   sleepMode = false;
   lastActivityTime = millis();
   
-  BT.write("Device awake! Type HELP for commands.\n");
+  sendAPCredentials();
+  
   SERIAL_ECHOLN("Device awake.");
 }
 
@@ -134,7 +135,7 @@ void handleBluetoothCommand(String cmd) {
     BT.write(sleepMode ? "Sleep\n" : "Active\n");
     BT.write("Bluetooth: Connected\n");
     
-    BT.write("WiFi: ");
+    BT.write("\nWiFi: ");
     if (wifiEnabled && WiFi.getMode() != WIFI_OFF) {
       BT.write("Enabled\n");
       BT.write("Mode: ");
@@ -143,7 +144,7 @@ void handleBluetoothCommand(String cmd) {
       if (network.isSTAmode()) {
         if (network.isConnected()) {
           BT.write("Status: Connected\n");
-          BT.write("SSID: ");
+          BT.write("Current SSID: ");
           BT.write(WiFi.SSID().c_str());
           BT.write("\n");
           BT.write("IP: ");
@@ -168,6 +169,46 @@ void handleBluetoothCommand(String cmd) {
     } else {
       BT.write("Disabled\n");
     }
+    
+    // Show stored credentials
+    BT.write("\n--- Stored Credentials ---\n");
+    char* stored_ssid = config.ssid();
+    char* stored_password = config.password();
+    
+    if (stored_ssid != NULL && strlen(stored_ssid) > 0) {
+      BT.write("Saved SSID: ");
+      BT.write(stored_ssid);
+      BT.write("\n");
+      
+      if (stored_password != NULL && strlen(stored_password) > 0) {
+        BT.write("Saved Password: ");
+        BT.write(stored_password);
+        BT.write("\n");
+      } else {
+        BT.write("Saved Password: (none)\n");
+      }
+    } else {
+      BT.write("No saved credentials\n");
+    }
+    
+    // Show AP credentials
+    char* ap_ssid = config.apSSID();
+    char* ap_password = config.apPassword();
+    
+    if (ap_ssid != NULL && strlen(ap_ssid) > 0) {
+      BT.write("AP SSID: ");
+      BT.write(ap_ssid);
+      BT.write("\n");
+      
+      if (ap_password != NULL && strlen(ap_password) > 0) {
+        BT.write("AP Password: ");
+        BT.write(ap_password);
+        BT.write("\n");
+      } else {
+        BT.write("AP Password: (open)\n");
+      }
+    }
+    BT.write("========================\n");
   }
   else if (cmd == "WIFI ON") {
     if (!wifiEnabled || WiFi.getMode() == WIFI_OFF) {
@@ -240,7 +281,28 @@ void handleBluetoothCommand(String cmd) {
   }
 }
 
+void sendAPCredentials() {
+  char* ap_ssid = config.apSSID();
+  char* ap_password = config.apPassword();
+  
+  if (ap_ssid != NULL && strlen(ap_ssid) > 0) {
+    BT.write(ap_ssid);
+    BT.write("\n");
+    
+    if (ap_password != NULL && strlen(ap_password) > 0) {
+      BT.write(ap_password);
+      BT.write("\n");
+    }
+  }
+}
+
 void loop() {
+  // Check if a Bluetooth client just connected
+  if (BT.checkAndClearJustConnected()) {
+    delay(500); // Small delay to ensure client is ready
+    sendAPCredentials();
+  }
+  
   // Handle Bluetooth data if available (works even in sleep mode)
   if (BT.available()) {
     String data = BT.readString();
