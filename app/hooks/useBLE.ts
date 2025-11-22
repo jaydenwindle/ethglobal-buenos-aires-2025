@@ -194,9 +194,6 @@ export const useBLE = () => {
       if (ssid && password && !ssid.includes("===") && !ssid.toLowerCase().includes("device")) {
         addLog("success", `WiFi credentials received - SSID: ${ssid}`);
         setWifiCredentials({ ssid, password });
-
-        // Auto-connect to WiFi
-        connectToWifi(ssid, password);
         return true;
       }
     }
@@ -323,6 +320,7 @@ export const useBLE = () => {
     wifiConnected,
     scanForDevices,
     sendCommand,
+    connectToWifi,
     disconnect,
     clearLogs,
   };

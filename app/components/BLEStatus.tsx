@@ -22,6 +22,7 @@ export const BLEStatus = () => {
     wifiConnected,
     scanForDevices,
     sendCommand,
+    connectToWifi,
     disconnect,
     clearLogs,
   } = useBLE();
@@ -38,6 +39,12 @@ export const BLEStatus = () => {
 
   const handleSleepCommand = () => {
     sendCommand("SLEEP");
+  };
+
+  const handleConnectWifi = () => {
+    if (wifiCredentials) {
+      connectToWifi(wifiCredentials.ssid, wifiCredentials.password);
+    }
   };
 
   const createStyles = () =>
@@ -324,9 +331,26 @@ export const BLEStatus = () => {
             {wifiCredentials.ssid}
           </Text>
           <Text style={styles.wifiStatusText}>
-            <Text style={styles.wifiStatusLabel}>Status: </Text>
-            {wifiConnecting ? "Connecting..." : wifiConnected ? "Connected ✓" : "Ready to connect"}
+            <Text style={styles.wifiStatusLabel}>Password: </Text>
+            {wifiCredentials.password}
           </Text>
+          <Text style={styles.wifiStatusText}>
+            <Text style={styles.wifiStatusLabel}>Status: </Text>
+            {wifiConnecting ? "Connecting..." : wifiConnected ? "Connected ✓" : "Not connected"}
+          </Text>
+          {!wifiConnected && (
+            <TouchableOpacity
+              style={[styles.button, { marginTop: 12 }]}
+              onPress={handleConnectWifi}
+              disabled={wifiConnecting}
+            >
+              {wifiConnecting ? (
+                <ActivityIndicator color="#ffffff" />
+              ) : (
+                <Text style={styles.buttonText}>Connect to WiFi</Text>
+              )}
+            </TouchableOpacity>
+          )}
         </View>
       )}
 
