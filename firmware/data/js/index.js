@@ -429,12 +429,23 @@ function niceBytes(x){
     return(n.toFixed(n < 10 && l > 0 ? 1 : 0) + ' ' + units[l]);
 }
 
+function isImageFile(filename) {
+    var ext = filename.toLowerCase();
+    return ext.endsWith('.jpg') || ext.endsWith('.jpeg') || 
+           ext.endsWith('.png') || ext.endsWith('.gif') || 
+           ext.endsWith('.bmp') || ext.endsWith('.webp');
+}
+
 function createFileListItem(item, level) {
     level = level || 0;
     var indent = level * 20;
     var isDir = item.type === 'dir';
     var icon = isDir ? '📁' : '📄';
     var cleanPath = item.path || item.name;
+    var isImage = !isDir && isImageFile(item.name);
+    
+    // Debug log the item details
+    addDebugLog('Creating item: name=' + item.name + ', path=' + item.path + ', cleanPath=' + cleanPath + ', isDir=' + isDir);
     
     var data = "<div class=\"file-tree-item\" data-path=\"" + cleanPath + "\" style=\"padding-left: " + indent + "px;\">\n";
     
@@ -451,13 +462,24 @@ function createFileListItem(item, level) {
         data += "<span class=\"file-size\">" + niceBytes(item.size) + "</span>\n";
         data += "<div class=\"file-actions\">\n";
         data += "<button class=\"btn-small\" onclick=\"onClickDelete('" + cleanPath + "')\">Delete</button>\n";
-        data += "<button class=\"btn-small\" onclick=\"onClickDownload('" + cleanPath + "')\">Download</button>\n";
+        
+        if (isImage) {
+            data += "<button class=\"btn-small btn-show\" onclick=\"onClickShowImage('" + cleanPath + "', this)\">Show</button>\n";
+        } else {
+            data += "<button class=\"btn-small\" onclick=\"onClickDownload('" + cleanPath + "')\">Download</button>\n";
+        }
         data += "</div>\n";
     } else {
         data += "<span class=\"file-size\">Folder</span>\n";
     }
     
     data += "</div>\n";
+    
+    // Add image preview container for images
+    if (isImage) {
+        data += "<div class=\"image-preview\" id=\"preview-" + cleanPath.replace(/[^a-zA-Z0-9]/g, '_') + "\" style=\"display: none;\"></div>\n";
+    }
+    
     data += "<div class=\"folder-contents\" style=\"display: none;\"></div>\n";
     
     return data;
@@ -598,4 +620,109 @@ function onClickUpdateList() {
     sdbusy = true;
 
     updateList();
+}
+
+function onClickShowImage(filename, buttonElement) {
+    addDebugLog('onClickShowImage called with: ' + filename);
+    
+    if(sdbusy) {
+        addDebugLog('SD card is busy');
+        alert("SD card is busy");
+        return;
+    }
+    
+    var previewId = 'preview-' + filename.replace(/[^a-zA-Z0-9]/g, '_');
+    addDebugLog('Looking for preview div: ' + previewId);
+    
+    var previewDiv = document.getElementById(previewId);
+    
+    if (!previewDiv) {
+        addDebugLog('ERROR: Preview container not found: ' + previewId);
+        alert("Preview container not found: " + previewId);
+        return;
+    }
+    
+    addDebugLog('Preview div found, current display: ' + previewDiv.style.display);
+    
+    // Toggle visibility
+    if (previewDiv.style.display === 'none' || previewDiv.style.display === '') {
+        // Show image
+        buttonElement.textContent = 'Hide';
+        buttonElement.classList.add('btn-active');
+        
+        // Check if image already loaded
+        if (previewDiv.innerHTML === '') {
+            previewDiv.innerHTML = '<div style="padding: 20px; text-align: center;">Loading image...</div>';
+            
+            // Construct URL - filename should already have leading /
+            var filePath = filename.startsWith('/') ? filename : '/' + filename;
+            var imgUrl = '/cat?path=' + encodeURIComponent(filePath);
+            addDebugLog('Loading image from: ' + imgUrl);
+            addDebugLog('File path: ' + filePath);
+            
+            // Use XHR to get better error information
+            var xhr = new XMLHttpRequest();
+            xhr.open('GET', imgUrl, true);
+            xhr.responseType = 'blob';
+            xhr.timeout = 10000;
+            
+            xhr.onload = function() {
+                addDebugLog('XHR onload - status: ' + xhr.status);
+                if (xhr.status === 200) {
+                    var blob = xhr.response;
+                    var objectUrl = URL.createObjectURL(blob);
+                    addDebugLog('Image loaded successfully, blob size: ' + blob.size);
+                    previewDiv.innerHTML = '<div style="padding: 15px; text-align: center; background: #f5f5f5; border-radius: 8px; margin: 10px 0;">' +
+                        '<img src="' + objectUrl + '" style="max-width: 100%; max-height: 600px; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);" />' +
+                        '<div style="margin-top: 10px; font-size: 0.85rem; color: #666;">Loaded: ' + filename + ' (' + blob.size + ' bytes)</div>' +
+                        '</div>';
+                    previewDiv.style.display = 'block';
+                } else {
+                    var errorMsg = 'HTTP ' + xhr.status;
+                    addDebugLog('Image load failed: ' + errorMsg);
+                    previewDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: red; background: #ffe6e6; border-radius: 8px; margin: 10px 0;">' +
+                        '<strong>Failed to load image</strong><br>' +
+                        'URL: ' + imgUrl + '<br>' +
+                        'Error: ' + errorMsg + '<br>' +
+                        'Filename: ' + filename +
+                        '</div>';
+                    previewDiv.style.display = 'block';
+                }
+            };
+            
+            xhr.onerror = function() {
+                addDebugLog('XHR error for: ' + imgUrl);
+                previewDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: red; background: #ffe6e6; border-radius: 8px; margin: 10px 0;">' +
+                    '<strong>Network Error</strong><br>' +
+                    'URL: ' + imgUrl + '<br>' +
+                    'Could not connect to server<br>' +
+                    'Filename: ' + filename +
+                    '</div>';
+                previewDiv.style.display = 'block';
+            };
+            
+            xhr.ontimeout = function() {
+                addDebugLog('XHR timeout for: ' + imgUrl);
+                previewDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: red; background: #ffe6e6; border-radius: 8px; margin: 10px 0;">' +
+                    '<strong>Timeout</strong><br>' +
+                    'URL: ' + imgUrl + '<br>' +
+                    'Request took too long<br>' +
+                    'Filename: ' + filename +
+                    '</div>';
+                previewDiv.style.display = 'block';
+            };
+            
+            xhr.send();
+            addDebugLog('XHR request sent');
+        } else {
+            addDebugLog('Image already loaded, just showing');
+            previewDiv.style.display = 'block';
+        }
+    } else {
+        // Hide image
+        addDebugLog('Hiding image');
+        previewDiv.style.display = 'none';
+        buttonElement.textContent = 'Show';
+        buttonElement.classList.remove('btn-active');
+    }
 }

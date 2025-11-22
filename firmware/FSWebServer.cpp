@@ -398,8 +398,21 @@ void FSWebServer::onHttpList(AsyncWebServerRequest * request) {
     int lastSlash = entryName.lastIndexOf('/');
     String displayName = (lastSlash >= 0) ? entryName.substring(lastSlash + 1) : entryName;
     
-    // For the full path, use the entry name as-is (it should be the full path)
-    String fullPath = entryName;
+    // Construct full path by combining parent path with filename
+    String fullPath;
+    if (entryName.startsWith("/")) {
+      // Entry name is already a full path
+      fullPath = entryName;
+    } else {
+      // Entry name is relative, combine with parent path
+      fullPath = path;
+      if (!path.endsWith("/")) {
+        fullPath += "/";
+      }
+      fullPath += displayName;
+    }
+    
+    DEBUG_LOG("Full path: '%s'\n", fullPath.c_str());
     
     response->print("{\"type\":\"");
     response->print(isDir ? "dir" : "file");

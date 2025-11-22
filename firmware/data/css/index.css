@@ -440,6 +440,28 @@ a:hover, a:focus, a.active {
     margin-left: 10px;
 }
 
+/* Image Preview Styles */
+.image-preview {
+    margin: 0;
+    padding: 0;
+}
+
+.btn-show {
+    background-color: #5cb85c;
+}
+
+.btn-show:hover {
+    background-color: #4cae4c;
+}
+
+.btn-show.btn-active {
+    background-color: #d9534f;
+}
+
+.btn-show.btn-active:hover {
+    background-color: #c9302c;
+}
+
 @media (max-width: 767px) {
     .file-tree-item {
         flex-wrap: wrap;
