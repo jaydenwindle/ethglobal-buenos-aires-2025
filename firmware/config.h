@@ -14,6 +14,7 @@
 // Default AP credentials (used if not specified in SETUP.INI)
 #define DEFAULT_AP_SSID "PERMA"
 #define DEFAULT_AP_PASSWORD "FuturePrimitive"
+#define DEFAULT_BT_SSID "ESP32-SD-WiFi"
 
 typedef struct config_type
 {
@@ -22,6 +23,7 @@ typedef struct config_type
   char psw[64];
   char ap_ssid[32];
   char ap_psw[64];
+  char bt_ssid[32];
 }CONFIG_TYPE;
 
 class Config	{
@@ -36,6 +38,8 @@ public:
   void apSSID(char* ssid);
   char* apPassword();
   void apPassword(char* password);
+  char* btSSID();
+  void btSSID(char* ssid);
   void save(const char*ssid,const char*password);
   void save();
   int save_ip(const char *ip);

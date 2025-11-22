@@ -13,9 +13,10 @@ int Config::loadFS() {
 		return -1;
 	}
 
-  // Initialize AP credentials with defaults
+  // Initialize AP and BT credentials with defaults
   strncpy(data.ap_ssid, DEFAULT_AP_SSID, WIFI_SSID_LEN);
   strncpy(data.ap_psw, DEFAULT_AP_PASSWORD, WIFI_PASSWD_LEN);
+  strncpy(data.bt_ssid, DEFAULT_BT_SSID, WIFI_SSID_LEN);
 
   // Get SSID and PASSWORD from file
   int rst = 0,step = 0;
@@ -63,6 +64,13 @@ int Config::loadFS() {
         sValue.toCharArray(data.ap_psw,WIFI_PASSWD_LEN);
       }
     }
+    else if(sKEY == "BT_SSID") {
+      SERIAL_ECHOLN("INI file : BT_SSID found");
+      if(sValue.length()>0) {
+        memset(data.bt_ssid,'\0',WIFI_SSID_LEN);
+        sValue.toCharArray(data.bt_ssid,WIFI_SSID_LEN);
+      }
+    }
   }
   
   file.close();
@@ -85,9 +93,10 @@ int Config::loadFS() {
 unsigned char Config::load(FS* fs) {
   _fs = fs;
 
-  // Initialize AP credentials with defaults first
+  // Initialize AP and BT credentials with defaults first
   strncpy(data.ap_ssid, DEFAULT_AP_SSID, WIFI_SSID_LEN);
   strncpy(data.ap_psw, DEFAULT_AP_PASSWORD, WIFI_PASSWD_LEN);
+  strncpy(data.bt_ssid, DEFAULT_BT_SSID, WIFI_SSID_LEN);
 
   SERIAL_ECHOLN("Going to load config from EEPROM");
 
@@ -101,12 +110,15 @@ unsigned char Config::load(FS* fs) {
 
   if(data.flag) {
     SERIAL_ECHOLN("Going to use the old network config");
-    // Ensure AP credentials are set if not in EEPROM
+    // Ensure AP and BT credentials are set if not in EEPROM
     if(strlen(data.ap_ssid) == 0) {
       strncpy(data.ap_ssid, DEFAULT_AP_SSID, WIFI_SSID_LEN);
     }
     if(strlen(data.ap_psw) == 0) {
       strncpy(data.ap_psw, DEFAULT_AP_PASSWORD, WIFI_PASSWD_LEN);
+    }
+    if(strlen(data.bt_ssid) == 0) {
+      strncpy(data.bt_ssid, DEFAULT_BT_SSID, WIFI_SSID_LEN);
     }
     return data.flag;
   }
@@ -154,6 +166,15 @@ char* Config::apPassword() {
 void Config::apPassword(char* password) {
   if(password == NULL) return;
   strncpy(data.ap_psw,password,WIFI_PASSWD_LEN);
+}
+
+char* Config::btSSID() {
+  return data.bt_ssid;
+}
+
+void Config::btSSID(char* ssid) {
+  if(ssid == NULL) return;
+  strncpy(data.bt_ssid,ssid,WIFI_SSID_LEN);
 }
 
 void Config::save(const char*ssid,const char*password) {

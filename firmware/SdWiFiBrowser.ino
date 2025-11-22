@@ -14,18 +14,21 @@ bool sleepMode = false;
 bool wifiEnabled = false;
 bool serverStarted = false;
 unsigned long lastActivityTime = 0;
-const bool WIFI_ENABLED_ON_START = true;
+const bool WIFI_ENABLED_ON_START = false;
 bool pendingCredentialsSend = false;
 
 void setup() {
   SERIAL_INIT(115200);
   
-  // Initialize Bluetooth first (needed for wake from sleep)
-  BT.begin("ESP32-SD-WiFi");
+  // Load config first to get BT name
+  SPIFFS.begin();
+  config.load(&SPIFFS);
+  
+  // Initialize Bluetooth with configured name
+  BT.begin(config.btSSID());
   
   if (WIFI_ENABLED_ON_START) {    
     SERIAL_ECHOLN("WiFi enabled on startup (WIFI_ENABLED_ON_START=true)");
-    SPIFFS.begin();
     sdcontrol.setup();
     network.start();
     server.begin(&SPIFFS);

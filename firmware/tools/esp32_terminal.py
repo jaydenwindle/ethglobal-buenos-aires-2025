@@ -7,7 +7,14 @@ Requirements:
     pip install bleak
 
 Usage:
-    python esp32_terminal.py
+    python esp32_terminal.py [device_name]
+    
+    device_name: Optional Bluetooth device name (default: digicam-001)
+    
+Examples:
+    python esp32_terminal.py                    # Connect to digicam-001
+    python esp32_terminal.py ESP32-SD-WiFi      # Connect to ESP32-SD-WiFi
+    python esp32_terminal.py my-device          # Connect to my-device
 
 Commands:
     HELP                              - Show available commands
@@ -16,6 +23,8 @@ Commands:
     WIFI SCAN                         - Scan for networks
     WIFI CONNECT <ssid> <password>    - Connect to WiFi
     WIFI AP                           - Start Access Point mode
+    SLEEP                             - Enter sleep mode
+    WAKE                              - Wake from sleep mode
     RESTART                           - Restart device
 """
 
@@ -28,12 +37,14 @@ SERVICE_UUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
 RX_UUID = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"  # Write to ESP32
 TX_UUID = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"  # Receive from ESP32
 
-DEVICE_NAME = "ESP32-SD-WiFi"
+# Default device name (can be overridden by command line argument)
+DEFAULT_DEVICE_NAME = "digicam-001"
 
 class ESP32Terminal:
-    def __init__(self):
+    def __init__(self, device_name=DEFAULT_DEVICE_NAME):
         self.client = None
         self.connected = False
+        self.device_name = device_name
         
     def notification_handler(self, sender, data):
         """Handle incoming data from ESP32"""
@@ -45,15 +56,16 @@ class ESP32Terminal:
     
     async def connect(self):
         """Scan for and connect to ESP32 device"""
-        print(f"Scanning for {DEVICE_NAME}...")
-        device = await BleakScanner.find_device_by_name(DEVICE_NAME, timeout=10.0)
+        print(f"Scanning for '{self.device_name}'...")
+        device = await BleakScanner.find_device_by_name(self.device_name, timeout=10.0)
         
         if not device:
-            print(f"\n❌ Device '{DEVICE_NAME}' not found!")
+            print(f"\n❌ Device '{self.device_name}' not found!")
             print("Make sure:")
             print("  1. Device is powered on")
             print("  2. Bluetooth is enabled on your computer")
             print("  3. Device is within range")
+            print(f"  4. Device name matches '{self.device_name}' (check SETUP.INI BT_SSID)")
             return False
         
         print(f"✓ Found device: {device.name} ({device.address})")
@@ -135,7 +147,14 @@ class ESP32Terminal:
                 break
 
 async def main():
-    terminal = ESP32Terminal()
+    # Get device name from command line argument or use default
+    device_name = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_DEVICE_NAME
+    
+    print(f"ESP32 Bluetooth Terminal")
+    print(f"Target device: {device_name}")
+    print("-" * 60)
+    
+    terminal = ESP32Terminal(device_name)
     
     try:
         # Connect to device
