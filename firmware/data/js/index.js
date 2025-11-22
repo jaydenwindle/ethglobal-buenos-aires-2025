@@ -625,7 +625,7 @@ function onClickUpdateList() {
 
 function loadImageProgressive(filename, previewDiv) {
     var filePath = filename.startsWith('/') ? filename : '/' + filename;
-    var chunkSize = 8192; // 8KB chunks
+    var chunkSize = 8192 * 16; // 8KB x 16 chunks
     var chunks = [];
     var currentChunk = 0;
     var totalChunks = null;

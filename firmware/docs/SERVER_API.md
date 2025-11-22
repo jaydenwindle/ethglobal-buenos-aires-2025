@@ -113,27 +113,40 @@ Response:
 ---
 
 ### cat - Display File Content
-Downloads/displays the content of a file.
+Downloads/displays the content of a file with optional chunked/progressive loading.
 
-**Endpoint:** `GET /cat?path={file_path}`
+**Endpoint:** `GET /cat?path={file_path}[&chunk={chunk_number}][&size={chunk_size}]`
 
 **Legacy Endpoint:** `GET /download?path={file_path}` (maintained for backward compatibility)
 
 **Parameters:**
 - `path` (required) - Full path to the file (e.g., "/config.txt")
+- `chunk` (optional) - Chunk number to retrieve (0-based index). If omitted, returns entire file.
+- `size` (optional) - Chunk size in bytes (default: 8192, max: 32768)
 
 **Response:**
-- `200 OK` - File content with appropriate Content-Type header
+- `200 OK` - File content (full or chunk) with appropriate Content-Type header
+- `206 Partial Content` - When requesting a specific chunk
 - `404 Not Found` - "DOWNLOAD:FileNotFound"
+- `416 Range Not Satisfiable` - Chunk number exceeds file size
 - `500 Internal Server Error` - Error messages:
   - "DOWNLOAD:SDBUSY" - SD card is being used by printer
   - "DOWNLOAD:BADARGS" - Missing path parameter
 
-**Headers:**
+**Headers (Full File):**
 - `Content-Type` - Automatically detected based on file extension
+- `Content-Length` - Total file size in bytes
 - `Connection: close`
 - `Access-Control-Allow-Origin: *`
 - `Content-Encoding: gzip` - If .gz file is served
+
+**Headers (Chunked):**
+- `Content-Type` - Automatically detected based on file extension
+- `Content-Range` - Byte range of this chunk (e.g., "bytes 0-8191/102400")
+- `Content-Length` - Size of this chunk
+- `X-Total-Chunks` - Total number of chunks for this file
+- `X-Chunk-Number` - Current chunk number (0-based)
+- `Access-Control-Allow-Origin: *`
 
 **Supported Content Types:**
 - `.htm`, `.html` → text/html
@@ -152,28 +165,69 @@ Downloads/displays the content of a file.
 
 **Examples:**
 
-Download file from root:
+Download entire file:
 ```
 GET /cat?path=/readme.txt
 
-Response: (file content)
+Response: (complete file content)
+Headers:
+  Content-Type: text/plain
+  Content-Length: 1234
 ```
 
-Download file from subdirectory:
+Download file in chunks (progressive loading):
 ```
-GET /cat?path=/DCIM/photo.jpg
+GET /cat?path=/DCIM/photo.jpg&chunk=0&size=8192
 
-Response: (binary image data)
+Response: (first 8192 bytes)
+Headers:
+  Content-Type: image/jpeg
+  Content-Range: bytes 0-8191/102400
+  Content-Length: 8192
+  X-Total-Chunks: 13
+  X-Chunk-Number: 0
 ```
 
-Download file from nested subdirectory:
+Get second chunk:
 ```
-GET /cat?path=/DCIM/NIKON100/IMG_001.jpg
+GET /cat?path=/DCIM/photo.jpg&chunk=1&size=8192
 
-Response: (binary image data)
+Response: (bytes 8192-16383)
+Headers:
+  Content-Range: bytes 8192-16383/102400
+  X-Chunk-Number: 1
 ```
 
-**Important:** The `path` parameter must be the full absolute path as returned by the `/ls` endpoint's `path` field.
+Get last chunk (may be smaller):
+```
+GET /cat?path=/DCIM/photo.jpg&chunk=12&size=8192
+
+Response: (bytes 98304-102399, only 4096 bytes)
+Headers:
+  Content-Range: bytes 98304-102399/102400
+  Content-Length: 4096
+  X-Chunk-Number: 12
+```
+
+**Progressive Loading Use Case:**
+
+For large images, the frontend can request chunks sequentially and display them progressively:
+
+1. Request chunk 0
+2. Display partial image (progressive JPEG/PNG rendering)
+3. Request chunk 1 while displaying
+4. Continue until all chunks received
+
+This provides:
+- Faster initial display (user sees something immediately)
+- Better perceived performance
+- Ability to cancel large downloads
+- Progress indication
+
+**Important:** 
+- The `path` parameter must be the full absolute path as returned by the `/ls` endpoint's `path` field
+- Chunk size should be between 1024 and 32768 bytes for optimal performance
+- Progressive rendering works best with progressive JPEG images
 
 ---
 
