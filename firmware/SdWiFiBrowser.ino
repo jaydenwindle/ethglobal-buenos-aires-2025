@@ -9,14 +9,19 @@
 
 void setup() {
   SERIAL_INIT(115200);
-  SPIFFS.begin();
+  // SPIFFS.begin();
   sdcontrol.setup();
   
   // Initialize Bluetooth
   BT.begin("ESP32-SD-WiFi");
   
-  network.start();
-  server.begin(&SPIFFS);
+  // network.start();
+  // server.begin(&SPIFFS);
+
+  // disable wifi by default
+  // WiFi.disconnect(true);
+  // WiFi.mode(WIFI_OFF);
+
   
   DEBUG_LOG("Setup complete\n");
 }
