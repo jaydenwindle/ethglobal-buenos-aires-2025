@@ -36,7 +36,10 @@ void SDControl::setup() {
 	  digitalWrite(SD_POWER_PIN,LOW);
 	#endif
 
+	// NOTE: WE DISABLE THIS FOR DIGICAM
+
 	// Wait for other master to assert SD card first
+	/*
 	for (int i=0; i<SPI_BLOCKOUT_PERIOD; i++)
 	{
 		delay(1000);
@@ -47,6 +50,7 @@ void SDControl::setup() {
 		// 	break;
 		// }
 	}
+	*/
 }
 
 // ------------------------
