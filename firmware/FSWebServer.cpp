@@ -18,7 +18,13 @@ FSWebServer::FSWebServer(uint16_t port) : AsyncWebServer(port) {}
 void FSWebServer::begin(FS* fs) {
     _fs = fs;
 
+    // Configure server timeouts for large file transfers
+    // Default timeout is too short for files > 1MB
     AsyncWebServer::begin();
+    
+    // Note: AsyncWebServer doesn't have a direct timeout setting
+    // The timeout is controlled by AsyncTCP library
+    // We'll handle this at the TCP level in platformio.ini
 
     server.on("/relinquish", HTTP_GET, [this](AsyncWebServerRequest *request) {
   		this->onHttpRelinquish(request);

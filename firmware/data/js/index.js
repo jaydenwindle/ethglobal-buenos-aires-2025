@@ -332,6 +332,7 @@ function onClickDownload(filename) {
     xhr.open('GET', urlData, true);
     xhr.setRequestHeader("Content-Type", type + ';charset=utf-8');
     xhr.responseType = 'blob';
+    xhr.timeout = 120000; // 120 second timeout for large files
     xhr.addEventListener('progress', event => {
         const percent  = ((event.loaded / event.total) * 100).toFixed(2);
         console.log(`downloaded:${percent} %`);
@@ -664,7 +665,7 @@ function onClickShowImage(filename, buttonElement) {
             var xhr = new XMLHttpRequest();
             xhr.open('GET', imgUrl, true);
             xhr.responseType = 'blob';
-            xhr.timeout = 10000;
+            xhr.timeout = 60000; // 60 second timeout for large images
             
             xhr.onload = function() {
                 addDebugLog('XHR onload - status: ' + xhr.status);
