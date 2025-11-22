@@ -75,12 +75,18 @@ export const FileBrowser: React.FC<FileBrowserProps> = ({ ipAddress }) => {
         const localUri = await api.downloadFileToLocal(
           entry.path,
           (progress, totalBytes, downloadedBytes) => {
+            // Use the file size from the ls endpoint if totalBytes is unknown
+            const knownTotalBytes = totalBytes > 0 ? totalBytes : entry.size;
+            const calculatedProgress = knownTotalBytes > 0
+              ? downloadedBytes / knownTotalBytes
+              : 0;
+
             setDownloadProgress(prev => {
               const newMap = new Map(prev);
               newMap.set(entry.path, {
                 path: entry.path,
-                progress,
-                totalBytes,
+                progress: calculatedProgress,
+                totalBytes: knownTotalBytes,
                 downloadedBytes,
               });
               return newMap;

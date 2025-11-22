@@ -61,6 +61,7 @@ export class SDCardAPI {
     const localUri = `${FileSystem.cacheDirectory}${filename}`;
 
     logger.info(`Downloading file: ${filename}`);
+    logger.info(`Download URL: ${url}`);
 
     try {
       const startTime = Date.now();
@@ -71,13 +72,21 @@ export class SDCardAPI {
         localUri,
         {},
         (downloadProgress) => {
+          logger.data(`Download progress: ${downloadProgress.totalBytesWritten} / ${downloadProgress.totalBytesExpectedToWrite}`);
+
           const progress = downloadProgress.totalBytesWritten / downloadProgress.totalBytesExpectedToWrite;
-          if (onProgress) {
-            onProgress(
-              progress,
-              downloadProgress.totalBytesExpectedToWrite,
-              downloadProgress.totalBytesWritten
-            );
+
+          // Check if we have valid progress data
+          if (!isNaN(progress) && isFinite(progress)) {
+            if (onProgress) {
+              onProgress(
+                progress,
+                downloadProgress.totalBytesExpectedToWrite,
+                downloadProgress.totalBytesWritten
+              );
+            }
+          } else {
+            logger.info(`Progress unavailable - server may not be sending Content-Length header`);
           }
         }
       );
