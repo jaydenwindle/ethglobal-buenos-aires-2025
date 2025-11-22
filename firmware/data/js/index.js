@@ -229,7 +229,7 @@ function httpGetList(path) {
     };
     
     try {
-        xmlHttp.open('GET', '/list?dir=' + path, true);
+        xmlHttp.open('GET', '/ls?dir=' + path, true);
         xmlHttp.send(null);
     } catch(e) {
         addDebugLog('Exception: ' + e.message);
@@ -255,7 +255,7 @@ function httpGetGcode(path) {
             }
         }
     };
-    xmlHttp.open('GET', '/download?dir=' + path, true);
+    xmlHttp.open('GET', '/cat?dir=' + path, true);
     xmlHttp.send(null);
 }
 
@@ -294,7 +294,7 @@ function onClickDelete(filename) {
             }
         }
     };
-    xmlHttp.open('GET', '/delete?path=' + filename, true);
+    xmlHttp.open('GET', '/rm?path=' + filename, true);
     xmlHttp.send();
 }
 
@@ -327,7 +327,7 @@ function onClickDownload(filename) {
 
     var type = getContentType(filename);
     // let urlData = '/ids/report/exportWord' + "?startTime=" + that.report.startTime + "&endTime=" + that.report.endTime +"&type="+type
-    let urlData = "/download?path=/" + filename;
+    let urlData = "/cat?path=/" + filename;
     let xhr = new XMLHttpRequest();
     xhr.open('GET', urlData, true);
     xhr.setRequestHeader("Content-Type", type + ';charset=utf-8');
@@ -415,7 +415,7 @@ function onClickUpload() {
     var savePath = '';
     savePath = '/' + input.files[0].name;
     formData.append('data', input.files[0], savePath);
-    xmlHttp.open('POST', '/upload');
+    xmlHttp.open('POST', '/dd');
     xmlHttp.send(formData);
 }
 
@@ -556,7 +556,7 @@ function loadFolder(path, toggleElement) {
         folderContents.innerHTML = '<div style="padding: 10px; color: red;">Connection error</div>';
     };
     
-    xhr.open('GET', '/list?dir=' + encodeURIComponent(requestPath), true);
+    xhr.open('GET', '/ls?dir=' + encodeURIComponent(requestPath), true);
     xhr.send(null);
 }
 

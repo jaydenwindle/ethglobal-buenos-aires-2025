@@ -24,6 +24,25 @@ void FSWebServer::begin(FS* fs) {
   		this->onHttpRelinquish(request);
   	});
 
+    // Linux-style command endpoints
+    server.on("/ls", HTTP_GET, [this](AsyncWebServerRequest *request) {
+  		this->onHttpList(request);
+  	});
+
+    server.on("/rm", HTTP_GET, [this](AsyncWebServerRequest *request) {
+  		this->onHttpDelete(request);
+  	});
+
+  	server.on("/cat", HTTP_GET, [this](AsyncWebServerRequest *request) {
+  		this->onHttpDownload(request);
+  	});
+
+  	server.on("/dd", HTTP_POST, [](AsyncWebServerRequest *request) { 
+  	  request->send(200, "text/plain", ""); },[this](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {
+		  this->onHttpFileUpload(request, filename, index, data, len, final);
+	  });
+
+    // Legacy endpoints for backward compatibility
     server.on("/list", HTTP_GET, [this](AsyncWebServerRequest *request) {
   		this->onHttpList(request);
   	});
