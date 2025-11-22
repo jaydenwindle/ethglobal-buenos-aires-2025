@@ -14,8 +14,11 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "eth.digicam.app",
-      "appleTeamId": "VJSWZB6H26"
+      "bundleIdentifier": "eth.digicam.app.hackathon",
+      "appleTeamId": "VJSWZB6H26",
+      "infoPlist": {
+        "NSLocalNetworkUsageDescription": "The app requires access to the local network so it can connect with your SD card"
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -23,7 +26,7 @@
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
-      "package": "eth.digicam.app",
+      "package": "eth.digicam.app.hackathon",
       "permissions": [
         "android.permission.BLUETOOTH",
         "android.permission.BLUETOOTH_ADMIN",
@@ -41,7 +44,8 @@
       "expo-secure-store",
       "expo-asset",
       "expo-web-browser",
-      "react-native-ble-plx"
+      "react-native-ble-plx",
+      "react-native-wifi-reborn"
     ]
   }
 }

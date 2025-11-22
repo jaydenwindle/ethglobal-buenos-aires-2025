@@ -17,6 +17,9 @@ export const BLEStatus = () => {
     bluetoothState,
     logs,
     receivedData,
+    wifiCredentials,
+    wifiConnecting,
+    wifiConnected,
     scanForDevices,
     sendCommand,
     disconnect,
@@ -27,6 +30,14 @@ export const BLEStatus = () => {
 
   const handleStatusCommand = () => {
     sendCommand("STATUS");
+  };
+
+  const handleWakeCommand = () => {
+    sendCommand("WAKE");
+  };
+
+  const handleSleepCommand = () => {
+    sendCommand("SLEEP");
   };
 
   const createStyles = () =>
@@ -92,6 +103,12 @@ export const BLEStatus = () => {
         backgroundColor: colors.cardBackground,
         borderWidth: 1,
         borderColor: colors.border,
+      },
+      buttonSuccess: {
+        backgroundColor: "#28a745",
+      },
+      buttonWarning: {
+        backgroundColor: "#ffc107",
       },
       buttonText: {
         color: "#ffffff",
@@ -197,6 +214,29 @@ export const BLEStatus = () => {
         color: colors.textSecondary,
         fontWeight: "600",
       },
+      wifiStatusContainer: {
+        backgroundColor: colors.cardBackground,
+        padding: 12,
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: colors.border,
+        marginBottom: 12,
+      },
+      wifiStatusText: {
+        fontSize: 14,
+        color: colors.text,
+        marginBottom: 4,
+      },
+      wifiStatusLabel: {
+        fontWeight: "600",
+      },
+      buttonRow: {
+        flexDirection: "row",
+        gap: 12,
+      },
+      buttonHalf: {
+        flex: 1,
+      },
     });
 
   const styles = createStyles();
@@ -245,6 +285,25 @@ export const BLEStatus = () => {
           </TouchableOpacity>
         ) : (
           <>
+            <View style={styles.buttonRow}>
+              <TouchableOpacity
+                style={[styles.button, styles.buttonSuccess, styles.buttonHalf]}
+                onPress={handleWakeCommand}
+                disabled={wifiConnecting}
+              >
+                {wifiConnecting ? (
+                  <ActivityIndicator color="#ffffff" />
+                ) : (
+                  <Text style={styles.buttonText}>Wake Device</Text>
+                )}
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.button, styles.buttonWarning, styles.buttonHalf]}
+                onPress={handleSleepCommand}
+              >
+                <Text style={styles.buttonText}>Sleep Device</Text>
+              </TouchableOpacity>
+            </View>
             <TouchableOpacity style={styles.button} onPress={handleStatusCommand}>
               <Text style={styles.buttonText}>Get STATUS</Text>
             </TouchableOpacity>
@@ -257,6 +316,19 @@ export const BLEStatus = () => {
           </>
         )}
       </View>
+
+      {wifiCredentials && (
+        <View style={styles.wifiStatusContainer}>
+          <Text style={styles.wifiStatusText}>
+            <Text style={styles.wifiStatusLabel}>WiFi Network: </Text>
+            {wifiCredentials.ssid}
+          </Text>
+          <Text style={styles.wifiStatusText}>
+            <Text style={styles.wifiStatusLabel}>Status: </Text>
+            {wifiConnecting ? "Connecting..." : wifiConnected ? "Connected ✓" : "Ready to connect"}
+          </Text>
+        </View>
+      )}
 
       {isConnected && (
         <View style={styles.section}>

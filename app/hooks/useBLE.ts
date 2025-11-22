@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { BleManager, Device, State } from "react-native-ble-plx";
 import { Alert } from "react-native";
 import { Buffer } from "buffer";
+import WifiManager from "react-native-wifi-reborn";
 
 // UUIDs from the ESP32 device (Nordic UART Service)
 const SERVICE_UUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E";
@@ -24,6 +25,10 @@ export const useBLE = () => {
   const [bluetoothState, setBluetoothState] = useState<State>(State.Unknown);
   const [logs, setLogs] = useState<BLELog[]>([]);
   const [receivedData, setReceivedData] = useState<string>("");
+  const [wifiCredentials, setWifiCredentials] = useState<{ ssid: string; password: string } | null>(null);
+  const [wifiConnecting, setWifiConnecting] = useState(false);
+  const [wifiConnected, setWifiConnected] = useState(false);
+  const pendingCommandRef = useRef<string | null>(null);
 
   const addLog = (type: BLELog["type"], message: string) => {
     const timestamp = new Date().toLocaleTimeString();
@@ -144,6 +149,60 @@ export const useBLE = () => {
     }
   };
 
+  // Connect to WiFi network
+  const connectToWifi = async (ssid: string, password: string) => {
+    setWifiConnecting(true);
+    setWifiConnected(false);
+    addLog("info", `Connecting to WiFi: ${ssid}...`);
+
+    try {
+      await WifiManager.connectToProtectedSSID(ssid, password, false, false);
+      addLog("success", `Connected to WiFi: ${ssid}`);
+      setWifiConnected(true);
+      Alert.alert("WiFi Connected", `Successfully connected to ${ssid}`);
+    } catch (error: any) {
+      const errorMessage = error?.message || error?.toString() || "Unknown error";
+      addLog("error", `WiFi connection failed: ${errorMessage}`);
+
+      let userMessage = "Failed to connect to WiFi network.";
+      if (errorMessage.includes("userDenied")) {
+        userMessage = "User denied WiFi connection permission.";
+      } else if (errorMessage.includes("locationPermissionDenied")) {
+        userMessage = "Location permission is required for WiFi connection.";
+      } else if (errorMessage.includes("invalidSSID")) {
+        userMessage = "Invalid WiFi network name.";
+      } else if (errorMessage.includes("invalidPassphrase")) {
+        userMessage = "Incorrect WiFi password.";
+      }
+
+      Alert.alert("WiFi Connection Failed", userMessage);
+    } finally {
+      setWifiConnecting(false);
+    }
+  };
+
+  // Parse WiFi credentials from received data (for WAKE command)
+  const parseWifiCredentials = (data: string) => {
+    const lines = data.split("\n").filter(line => line.trim().length > 0);
+
+    // Look for SSID and password (should be first two non-empty lines after WAKE)
+    if (lines.length >= 2) {
+      const ssid = lines[0].trim();
+      const password = lines[1].trim();
+
+      // Basic validation - SSID shouldn't look like a status message
+      if (ssid && password && !ssid.includes("===") && !ssid.toLowerCase().includes("device")) {
+        addLog("success", `WiFi credentials received - SSID: ${ssid}`);
+        setWifiCredentials({ ssid, password });
+
+        // Auto-connect to WiFi
+        connectToWifi(ssid, password);
+        return true;
+      }
+    }
+    return false;
+  };
+
   // Start listening for notifications
   const startNotifications = async (connectedDevice: Device) => {
     try {
@@ -162,7 +221,21 @@ export const useBLE = () => {
             // Decode base64 value
             const decodedValue = Buffer.from(characteristic.value, "base64").toString("utf-8");
             addLog("data", `Received: ${decodedValue}`);
-            setReceivedData((prev) => prev + decodedValue);
+            setReceivedData((prev) => {
+              const newData = prev + decodedValue;
+
+              // If we just sent a WAKE command, try to parse credentials
+              if (pendingCommandRef.current === "WAKE") {
+                // Give it a moment to receive all data
+                setTimeout(() => {
+                  if (parseWifiCredentials(newData)) {
+                    pendingCommandRef.current = null;
+                  }
+                }, 500);
+              }
+
+              return newData;
+            });
           }
         }
       );
@@ -185,8 +258,18 @@ export const useBLE = () => {
     try {
       addLog("info", `Sending command: ${command}`);
 
-      // Clear previous received data
+      // Clear previous received data and WiFi state
       setReceivedData("");
+      setWifiCredentials(null);
+      setWifiConnected(false);
+
+      // Track pending command for WAKE
+      const upperCommand = command.toUpperCase().trim();
+      if (upperCommand === "WAKE") {
+        pendingCommandRef.current = "WAKE";
+      } else {
+        pendingCommandRef.current = null;
+      }
 
       // Encode command to base64
       const base64Command = Buffer.from(command).toString("base64");
@@ -202,6 +285,7 @@ export const useBLE = () => {
       const errorMessage = error instanceof Error ? error.message : "Unknown error";
       addLog("error", `Failed to send command: ${errorMessage}`);
       Alert.alert("Send Failed", errorMessage);
+      pendingCommandRef.current = null;
     }
   };
 
@@ -234,6 +318,9 @@ export const useBLE = () => {
     bluetoothState,
     logs,
     receivedData,
+    wifiCredentials,
+    wifiConnecting,
+    wifiConnected,
     scanForDevices,
     sendCommand,
     disconnect,

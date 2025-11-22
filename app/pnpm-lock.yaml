@@ -65,6 +65,9 @@ importers:
       react-native-quick-crypto:
         specifier: ^0.7.17
         version: 0.7.17(react-native@0.79.6(@babel/core@7.28.5)(@types/react@19.1.0)(bufferutil@4.0.9)(react@19.1.0)(utf-8-validate@5.0.10))(react@19.1.0)
+      react-native-wifi-reborn:
+        specifier: ^4.13.6
+        version: 4.13.6(react-native@0.79.6(@babel/core@7.28.5)(@types/react@19.1.0)(bufferutil@4.0.9)(react@19.1.0)(utf-8-validate@5.0.10))
       readable-stream:
         specifier: ^4.6.0
         version: 4.7.0
@@ -3678,6 +3681,11 @@ packages:
 
   react-native-quick-crypto@0.7.17:
     resolution: {integrity: sha512-cJzp6oA/dM1lujt+Rwtn46Mgcs3w9F/0oQvNz1jcADc/AXktveAOUTzzKrDMxyg6YPziCYnoqMDzHBo6OLSU1g==}
+
+  react-native-wifi-reborn@4.13.6:
+    resolution: {integrity: sha512-vlZYgRnFapVVeJ8z0G0k7k6wUi9mUPhW6ji008mp5BBKMbZNL0AxdyHUOW3uP1emKYK7eRIvfx6AuECpG2mAsg==}
+    peerDependencies:
+      react-native: '>=0.13'
 
   react-native@0.79.6:
     resolution: {integrity: sha512-kvIWSmf4QPfY41HC25TR285N7Fv0Pyn3DAEK8qRL9dA35usSaxsJkHfw+VqnonqJjXOaoKCEanwudRAJ60TBGA==}
@@ -9862,6 +9870,10 @@ snapshots:
     transitivePeerDependencies:
       - react
       - react-native
+
+  react-native-wifi-reborn@4.13.6(react-native@0.79.6(@babel/core@7.28.5)(@types/react@19.1.0)(bufferutil@4.0.9)(react@19.1.0)(utf-8-validate@5.0.10)):
+    dependencies:
+      react-native: 0.79.6(@babel/core@7.28.5)(@types/react@19.1.0)(bufferutil@4.0.9)(react@19.1.0)(utf-8-validate@5.0.10)
 
   react-native@0.79.6(@babel/core@7.28.5)(@types/react@19.1.0)(bufferutil@4.0.9)(react@19.1.0)(utf-8-validate@5.0.10):
     dependencies:
