@@ -13,3 +13,12 @@ Built at ETHGlobal Buenos Aires 2025
 └── README.md
 ```
 
+
+# Bluetooth API
+- toggle wifi + server on/off
+- get photo count
+
+# Web API
+- /ls?path=/DCIM
+- /cat?path=/DCIM/IMG_1001.JPG
+- /dd?path=/DCIM/IMG_1001.JPG&bs=1024&skip=0&count=1
