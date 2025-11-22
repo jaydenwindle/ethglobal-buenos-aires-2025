@@ -56,19 +56,57 @@ Lists files and directories in the specified path (non-recursive).
 ]
 ```
 
+**Response Fields:**
+- `type`: Either "dir" for directories or "file" for files
+- `name`: Display name (filename only, without parent path)
+- `path`: Full absolute path from root (e.g., "/DCIM/NIKON100/image.jpg")
+- `size`: File size in bytes (0 for directories)
+
+**Path Construction:**
+The `path` field is constructed by combining the requested directory path with the entry name:
+- If listing `/`: returns paths like `/DCIM`, `/file.txt`
+- If listing `/DCIM`: returns paths like `/DCIM/NIKON100`, `/DCIM/image.jpg`
+- If listing `/DCIM/NIKON100`: returns paths like `/DCIM/NIKON100/photo.jpg`
+
 **Notes:**
 - Maximum 200 items per request
 - Only lists immediate children (non-recursive)
-- Paths must start with "/"
+- Request path parameter (`dir`) must start with "/"
+- Response `path` field always contains the full absolute path
+- Use the `path` field for subsequent operations (download, delete, nested list)
 
-**Example:**
+**Examples:**
+
+List root directory:
 ```
-GET /ls?dir=/gcodes
+GET /ls?dir=/
 
 Response:
 [
-  {"type":"file","name":"test.gcode","path":"/gcodes/test.gcode","size":54321},
-  {"type":"dir","name":"subfolder","path":"/gcodes/subfolder","size":0}
+  {"type":"dir","name":"DCIM","path":"/DCIM","size":0},
+  {"type":"file","name":"readme.txt","path":"/readme.txt","size":1234}
+]
+```
+
+List subdirectory:
+```
+GET /ls?dir=/DCIM
+
+Response:
+[
+  {"type":"dir","name":"NIKON100","path":"/DCIM/NIKON100","size":0},
+  {"type":"file","name":"photo.jpg","path":"/DCIM/photo.jpg","size":54321}
+]
+```
+
+List nested subdirectory:
+```
+GET /ls?dir=/DCIM/NIKON100
+
+Response:
+[
+  {"type":"file","name":"IMG_001.jpg","path":"/DCIM/NIKON100/IMG_001.jpg","size":2048576},
+  {"type":"file","name":"IMG_002.jpg","path":"/DCIM/NIKON100/IMG_002.jpg","size":1987654}
 ]
 ```
 
@@ -112,12 +150,30 @@ Downloads/displays the content of a file.
 - `.gz` → application/x-gzip
 - Default → text/plain
 
-**Example:**
+**Examples:**
+
+Download file from root:
 ```
-GET /cat?path=/config.txt
+GET /cat?path=/readme.txt
 
 Response: (file content)
 ```
+
+Download file from subdirectory:
+```
+GET /cat?path=/DCIM/photo.jpg
+
+Response: (binary image data)
+```
+
+Download file from nested subdirectory:
+```
+GET /cat?path=/DCIM/NIKON100/IMG_001.jpg
+
+Response: (binary image data)
+```
+
+**Important:** The `path` parameter must be the full absolute path as returned by the `/ls` endpoint's `path` field.
 
 ---
 
@@ -150,17 +206,31 @@ Uploads a file to the SD card with support for chunked/streaming uploads.
 - Supports streaming/chunked uploads for large files
 - SD card control is held for the entire upload duration
 
-**Example:**
+**Examples:**
+
+Upload to root directory:
 ```javascript
-// JavaScript example
 const formData = new FormData();
-formData.append('file', fileBlob, '/path/to/file.gcode');
+formData.append('data', fileBlob, '/readme.txt');
 
 fetch('/dd', {
   method: 'POST',
   body: formData
 });
 ```
+
+Upload to subdirectory:
+```javascript
+const formData = new FormData();
+formData.append('data', fileBlob, '/DCIM/photo.jpg');
+
+fetch('/dd', {
+  method: 'POST',
+  body: formData
+});
+```
+
+**Important:** The filename in the FormData must include the full path with leading "/"
 
 ---
 
@@ -186,12 +256,33 @@ Deletes a file or directory from the SD card.
 - Path parameter should NOT include leading "/"
 - Automatically adds "/" prefix to path
 
-**Example:**
+**Examples:**
+
+Delete file from root:
 ```
-GET /rm?path=gcodes/old_file.gcode
+GET /rm?path=readme.txt
 
 Response: ok
 ```
+
+Delete file from subdirectory:
+```
+GET /rm?path=DCIM/photo.jpg
+
+Response: ok
+```
+
+Delete file from nested subdirectory:
+```
+GET /rm?path=DCIM/NIKON100/IMG_001.jpg
+
+Response: ok
+```
+
+**Important:** 
+- The `path` parameter should NOT include the leading "/" (it's added automatically)
+- Use the path from the `/ls` response but remove the leading "/"
+- Example: If `/ls` returns `"/DCIM/photo.jpg"`, use `path=DCIM/photo.jpg`
 
 ---
 
