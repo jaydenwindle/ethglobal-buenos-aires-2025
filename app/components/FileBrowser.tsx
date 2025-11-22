@@ -70,43 +70,61 @@ export const FileBrowser: React.FC<FileBrowserProps> = ({ ipAddress }) => {
         return;
       }
 
+      // Check if already downloading
+      if (downloadProgress.has(entry.path)) {
+        // Download in progress, don't start another
+        return;
+      }
+
+      // Initialize download progress
+      setDownloadProgress(prev => {
+        const newMap = new Map(prev);
+        newMap.set(entry.path, {
+          path: entry.path,
+          progress: 0,
+          totalBytes: entry.size,
+          downloadedBytes: 0,
+        });
+        return newMap;
+      });
+
       // Download and display file (assume it's an image)
       try {
         const localUri = await api.downloadFileToLocal(
           entry.path,
+          entry.size,
           (progress, totalBytes, downloadedBytes) => {
-            // Use the file size from the ls endpoint if totalBytes is unknown
-            const knownTotalBytes = totalBytes > 0 ? totalBytes : entry.size;
-            const calculatedProgress = knownTotalBytes > 0
-              ? downloadedBytes / knownTotalBytes
-              : 0;
-
             setDownloadProgress(prev => {
               const newMap = new Map(prev);
               newMap.set(entry.path, {
                 path: entry.path,
-                progress: calculatedProgress,
-                totalBytes: knownTotalBytes,
+                progress,
+                totalBytes,
                 downloadedBytes,
               });
               return newMap;
             });
-          }
+          },
+          65536 // 64KB chunks
         );
 
-        // Add to downloaded images
-        setDownloadedImages(prev => [...prev, {
-          path: entry.path,
-          localUri,
-          name: entry.name,
-        }]);
+        // Only clear progress and show image after download is 100% complete
+        // Wait a brief moment to ensure final progress update is rendered
+        setTimeout(() => {
+          // Clear progress
+          setDownloadProgress(prev => {
+            const newMap = new Map(prev);
+            newMap.delete(entry.path);
+            return newMap;
+          });
 
-        // Clear progress
-        setDownloadProgress(prev => {
-          const newMap = new Map(prev);
-          newMap.delete(entry.path);
-          return newMap;
-        });
+          // Add to downloaded images
+          setDownloadedImages(prev => [...prev, {
+            path: entry.path,
+            localUri,
+            name: entry.name,
+          }]);
+        }, 100);
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : "Failed to download file";
         Alert.alert("Download Error", errorMessage);
