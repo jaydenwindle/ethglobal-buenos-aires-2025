@@ -628,6 +628,8 @@ function loadImageProgressive(filename, previewDiv) {
     var chunkSize = 16384 * 4; // 16KB chunks - optimal for ESP32
     var imageElement = null;
     var currentBlobUrl = null;
+    var lastUpdateChunk = -1;
+    var updateInterval = 3; // Update image every N chunks to reduce flashing
     var chunks = [];
     var currentChunk = 0;
     var totalChunks = null;
@@ -665,29 +667,48 @@ function loadImageProgressive(filename, previewDiv) {
             offset += chunks[i].length;
         }
         
-        // Create blob and update image
+        // Create blob and load image
         var blob = new Blob([combined], { type: getContentType(filename) });
         var newBlobUrl = URL.createObjectURL(blob);
         
-        if (!imageElement) {
-            // Create image element on first chunk
-            imageElement = document.createElement('img');
-            imageElement.style.maxWidth = '100%';
-            imageElement.style.maxHeight = '600px';
-            imageElement.style.borderRadius = '4px';
-            imageElement.style.boxShadow = '0 2px 8px rgba(0,0,0,0.1)';
-            imgContainer.innerHTML = '';
-            imgContainer.appendChild(imageElement);
-        }
+        // Create a temporary image to load the partial data
+        var tempImg = new Image();
+        tempImg.onload = function() {
+            if (!imageElement) {
+                // Create image element on first successful load
+                imageElement = document.createElement('img');
+                imageElement.style.maxWidth = '100%';
+                imageElement.style.maxHeight = '600px';
+                imageElement.style.borderRadius = '4px';
+                imageElement.style.boxShadow = '0 2px 8px rgba(0,0,0,0.1)';
+                imageElement.style.display = 'block';
+                imageElement.style.opacity = '0';
+                imageElement.style.transition = 'opacity 0.3s ease-in-out';
+                imgContainer.innerHTML = '';
+                imgContainer.appendChild(imageElement);
+                
+                // Fade in on first load
+                setTimeout(function() {
+                    if (imageElement) imageElement.style.opacity = '1';
+                }, 50);
+            }
+            
+            // Update the displayed image smoothly
+            imageElement.src = newBlobUrl;
+            
+            // Revoke old blob URL to free memory
+            if (currentBlobUrl && currentBlobUrl !== newBlobUrl) {
+                URL.revokeObjectURL(currentBlobUrl);
+            }
+            currentBlobUrl = newBlobUrl;
+        };
         
-        // Revoke old blob URL to free memory
-        if (currentBlobUrl) {
-            URL.revokeObjectURL(currentBlobUrl);
-        }
-        currentBlobUrl = newBlobUrl;
+        tempImg.onerror = function() {
+            // Not enough data yet to render, that's ok
+            URL.revokeObjectURL(newBlobUrl);
+        };
         
-        // Update image source - browser will progressively render
-        imageElement.src = newBlobUrl;
+        tempImg.src = newBlobUrl;
     }
     
     function loadNextChunk() {
@@ -715,8 +736,16 @@ function loadImageProgressive(filename, previewDiv) {
                 if (progressBar) progressBar.style.width = progress + '%';
                 if (statusText) statusText.textContent = 'Chunk ' + (currentChunk + 1) + (totalChunks ? ' of ' + totalChunks : '') + ' (' + Math.round(progress) + '%)';
                 
-                // Update image display progressively
-                updateImageDisplay();
+                // Update image display progressively (but not every single chunk to reduce flashing)
+                // Update on first chunk, then every N chunks, and always on last chunk
+                var shouldUpdate = (currentChunk === 0) || 
+                                 ((currentChunk - lastUpdateChunk) >= updateInterval) ||
+                                 (totalChunks && currentChunk + 1 >= totalChunks);
+                
+                if (shouldUpdate) {
+                    updateImageDisplay();
+                    lastUpdateChunk = currentChunk;
+                }
                 
                 currentChunk++;
                 

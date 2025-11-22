@@ -8,6 +8,9 @@
 #include "config.h"
 #include "bluetooth.h"
 
+// Debug control - set to false for production (eliminates all debug overhead)
+constexpr bool ENABLE_VERBOSE_LOGGING = false;
+
 const char* PARAM_MESSAGE = "message";
 uint8_t printer_sd_type = 0;
 
@@ -97,19 +100,26 @@ void FSWebServer::begin(FS* fs) {
 
 String getContentType(String filename, AsyncWebServerRequest *request) {
   if (request->hasArg("download")) return "application/octet-stream";
-  else if (filename.endsWith(".htm")) return "text/html";
-  else if (filename.endsWith(".html")) return "text/html";
-  else if (filename.endsWith(".css")) return "text/css";
-  else if (filename.endsWith(".js")) return "application/javascript";
-  else if (filename.endsWith(".json")) return "application/json";
-  else if (filename.endsWith(".png")) return "image/png";
-  else if (filename.endsWith(".gif")) return "image/gif";
-  else if (filename.endsWith(".jpg")) return "image/jpeg";
-  else if (filename.endsWith(".ico")) return "image/x-icon";
-  else if (filename.endsWith(".xml")) return "text/xml";
-  else if (filename.endsWith(".pdf")) return "application/x-pdf";
-  else if (filename.endsWith(".zip")) return "application/x-zip";
-  else if (filename.endsWith(".gz")) return "application/x-gzip";
+  
+  // Find extension using pointer arithmetic (much faster than endsWith)
+  const char* ext = strrchr(filename.c_str(), '.');
+  if (!ext) return "text/plain";
+  
+  // Use direct strcmp instead of String operations
+  // Ordered by most common file types first for faster average lookup
+  if (strcmp(ext, ".json") == 0) return "application/json";
+  if (strcmp(ext, ".png") == 0) return "image/png";
+  if (strcmp(ext, ".jpg") == 0 || strcmp(ext, ".jpeg") == 0) return "image/jpeg";
+  if (strcmp(ext, ".gif") == 0) return "image/gif";
+  if (strcmp(ext, ".ico") == 0) return "image/x-icon";
+  // if (strcmp(ext, ".xml") == 0) return "text/xml";
+  // if (strcmp(ext, ".pdf") == 0) return "application/x-pdf";
+  // if (strcmp(ext, ".zip") == 0) return "application/x-zip";
+  // if (strcmp(ext, ".gz") == 0) return "application/x-gzip";
+  if (strcmp(ext, ".htm") == 0 || strcmp(ext, ".html") == 0) return "text/html";
+  if (strcmp(ext, ".js") == 0) return "application/javascript";
+  if (strcmp(ext, ".css") == 0) return "text/css";
+  
   return "text/plain";
 }
 
@@ -133,24 +143,23 @@ void FSWebServer::onHttpWifiList(AsyncWebServerRequest *request) {
 void FSWebServer::onHttpWifiStatus(AsyncWebServerRequest *request) {
   DEBUG_LOG("onHttpWifiStatus\n");
 
-  String resp = "WIFI:";
+  char resp[64];
   
   // Check if in AP mode or STA mode
   if (!network.isSTAmode()) {
-    resp += "AP_Mode";
+    strcpy(resp, "WIFI:AP_Mode");
   } else {
     switch(network.status()) {
       case 1:
-        resp += "Failed";
+        strcpy(resp, "WIFI:Failed");
       break;
       case 2:
-        resp += "Connecting";
+        strcpy(resp, "WIFI:Connecting");
       break;
       case 3:
         IPAddress ip = WiFi.localIP();
-        resp += "Connected:";
-        for (int i=0; i<4; i++)
-          resp += i  ? "." + String(ip[i]) : String(ip[i]);
+        snprintf(resp, sizeof(resp), "WIFI:Connected:%d.%d.%d.%d", 
+                 ip[0], ip[1], ip[2], ip[3]);
       break;
     }
   }
@@ -196,11 +205,10 @@ void FSWebServer::onHttpWifiConnect(AsyncWebServerRequest *request)
     request->send(200, "text/plain", "WIFI:Starting");
   }
   else {
-    String resp = "WIFI:";
+    char resp[64];
     IPAddress ip = WiFi.localIP();
-      resp += "AlreadyCon:";
-      for (int i=0; i<4; i++)
-        resp += i  ? "." + String(ip[i]) : String(ip[i]);
+    snprintf(resp, sizeof(resp), "WIFI:AlreadyCon:%d.%d.%d.%d", 
+             ip[0], ip[1], ip[2], ip[3]);
     request->send(200, "text/plain", resp);
   }
 
@@ -292,13 +300,17 @@ void FSWebServer::onHttpRelinquish(AsyncWebServerRequest *request) {
 }
 
 void FSWebServer::onHttpDownload(AsyncWebServerRequest *request) {
-    SERIAL_ECHOLN("=== HTTP Download Request ===");
-    DEBUG_LOG("Client: %s\n", request->client()->remoteIP().toString().c_str());
+    if constexpr (ENABLE_VERBOSE_LOGGING) {
+      SERIAL_ECHOLN("=== HTTP Download Request ===");
+      DEBUG_LOG("Client: %s\n", request->client()->remoteIP().toString().c_str());
+    }
 
     switch(sdcontrol.canWeTakeControl())
     { 
       case -1: {
-        SERIAL_ECHOLN("ERROR: Printer controlling the SD card");
+        if constexpr (ENABLE_VERBOSE_LOGGING) {
+          SERIAL_ECHOLN("ERROR: Printer controlling the SD card");
+        }
         request->send(500, "text/plain","DOWNLOAD:SDBUSY");
       }
       return;
@@ -308,13 +320,18 @@ void FSWebServer::onHttpDownload(AsyncWebServerRequest *request) {
   
     // Get path parameter
     if (!request->hasParam("path")) {
-      SERIAL_ECHOLN("ERROR: No path parameter");
+      if constexpr (ENABLE_VERBOSE_LOGGING) {
+        SERIAL_ECHOLN("ERROR: No path parameter");
+      }
       request->send(500, "text/plain","DOWNLOAD:BADARGS");
       return;
     }
     String path = request->getParam("path")->value();
-    SERIAL_ECHO("Requested path: ");
-    SERIAL_ECHOLN(path.c_str());
+    
+    if constexpr (ENABLE_VERBOSE_LOGGING) {
+      SERIAL_ECHO("Requested path: ");
+      SERIAL_ECHOLN(path.c_str());
+    }
     
     // Check for chunked download parameters
     bool isChunked = request->hasParam("chunk");
@@ -329,30 +346,41 @@ void FSWebServer::onHttpDownload(AsyncWebServerRequest *request) {
         // if (chunkSize < 1024) chunkSize = 1024;
         // if (chunkSize > 32768) chunkSize = 32768;
       }
-      SERIAL_ECHO("Mode: Chunked - chunk #");
-      SERIAL_ECHO(String(chunkNumber).c_str());
-      SERIAL_ECHO(", size: ");
-      SERIAL_ECHO(String(chunkSize).c_str());
-      SERIAL_ECHOLN(" bytes");
+      if constexpr (ENABLE_VERBOSE_LOGGING) {
+        SERIAL_ECHO("Mode: Chunked - chunk #");
+        SERIAL_ECHO(String(chunkNumber).c_str());
+        SERIAL_ECHO(", size: ");
+        SERIAL_ECHO(String(chunkSize).c_str());
+        SERIAL_ECHOLN(" bytes");
+      }
     } else {
-      SERIAL_ECHOLN("Mode: Full file download");
+      if constexpr (ENABLE_VERBOSE_LOGGING) {
+        SERIAL_ECHOLN("Mode: Full file download");
+      }
     }
 
     sdcontrol.takeControl();
-    SERIAL_ECHOLN("SD control acquired");
+    
+    if constexpr (ENABLE_VERBOSE_LOGGING) {
+      SERIAL_ECHOLN("SD control acquired");
+    }
     
     // Open file
     File file = SD.open(path.c_str());
     if (!file) {
-      SERIAL_ECHO("ERROR: File not found: ");
-      SERIAL_ECHOLN(path.c_str());
+      if constexpr (ENABLE_VERBOSE_LOGGING) {
+        SERIAL_ECHO("ERROR: File not found: ");
+        SERIAL_ECHOLN(path.c_str());
+      }
       sdcontrol.relinquishControl();
       request->send(404, "text/plain", "DOWNLOAD:FileNotFound");
       return;
     }
     
     if (file.isDirectory()) {
-      SERIAL_ECHOLN("ERROR: Path is a directory");
+      if constexpr (ENABLE_VERBOSE_LOGGING) {
+        SERIAL_ECHOLN("ERROR: Path is a directory");
+      }
       file.close();
       sdcontrol.relinquishControl();
       request->send(500, "text/plain", "DOWNLOAD:ISDIR");
@@ -362,10 +390,12 @@ void FSWebServer::onHttpDownload(AsyncWebServerRequest *request) {
     size_t fileSize = file.size();
     String contentType = getContentType(path, request);
     
-    SERIAL_ECHO("File opened: ");
-    SERIAL_ECHO(String(fileSize).c_str());
-    SERIAL_ECHO(" bytes, type: ");
-    SERIAL_ECHOLN(contentType.c_str());
+    if constexpr (ENABLE_VERBOSE_LOGGING) {
+      SERIAL_ECHO("File opened: ");
+      SERIAL_ECHO(String(fileSize).c_str());
+      SERIAL_ECHO(" bytes, type: ");
+      SERIAL_ECHOLN(contentType.c_str());
+    }
     
     if (isChunked) {
       // Calculate chunk boundaries
@@ -373,9 +403,11 @@ void FSWebServer::onHttpDownload(AsyncWebServerRequest *request) {
       
       if (startByte >= fileSize) {
         // Chunk beyond file size
-        SERIAL_ECHO("ERROR: Chunk ");
-        SERIAL_ECHO(String(chunkNumber).c_str());
-        SERIAL_ECHOLN(" beyond file size");
+        if constexpr (ENABLE_VERBOSE_LOGGING) {
+          SERIAL_ECHO("ERROR: Chunk ");
+          SERIAL_ECHO(String(chunkNumber).c_str());
+          SERIAL_ECHOLN(" beyond file size");
+        }
         file.close();
         sdcontrol.relinquishControl();
         request->send(416, "text/plain", "DOWNLOAD:RANGE_NOT_SATISFIABLE");
@@ -391,16 +423,18 @@ void FSWebServer::onHttpDownload(AsyncWebServerRequest *request) {
       // Calculate total chunks
       int totalChunks = (fileSize + chunkSize - 1) / chunkSize;
       
-      SERIAL_ECHO("Sending chunk ");
-      SERIAL_ECHO(String(chunkNumber).c_str());
-      SERIAL_ECHO("/");
-      SERIAL_ECHO(String(totalChunks).c_str());
-      SERIAL_ECHO(": bytes ");
-      SERIAL_ECHO(String(startByte).c_str());
-      SERIAL_ECHO("-");
-      SERIAL_ECHO(String(endByte).c_str());
-      SERIAL_ECHO("/");
-      SERIAL_ECHOLN(String(fileSize).c_str());
+      if constexpr (ENABLE_VERBOSE_LOGGING) {
+        SERIAL_ECHO("Sending chunk ");
+        SERIAL_ECHO(String(chunkNumber).c_str());
+        SERIAL_ECHO("/");
+        SERIAL_ECHO(String(totalChunks).c_str());
+        SERIAL_ECHO(": bytes ");
+        SERIAL_ECHO(String(startByte).c_str());
+        SERIAL_ECHO("-");
+        SERIAL_ECHO(String(endByte).c_str());
+        SERIAL_ECHO("/");
+        SERIAL_ECHOLN(String(fileSize).c_str());
+      }
       
       // Seek to start position
       file.seek(startByte);
@@ -440,9 +474,11 @@ void FSWebServer::onHttpDownload(AsyncWebServerRequest *request) {
       
     } else {
       // Send entire file (original behavior)
-      SERIAL_ECHO("Sending entire file: ");
-      SERIAL_ECHO(String(fileSize).c_str());
-      SERIAL_ECHOLN(" bytes");
+      if constexpr (ENABLE_VERBOSE_LOGGING) {
+        SERIAL_ECHO("Sending entire file: ");
+        SERIAL_ECHO(String(fileSize).c_str());
+        SERIAL_ECHOLN(" bytes");
+      }
       
       AsyncWebServerResponse *response = request->beginResponse(SD, path, contentType);
       response->addHeader("Connection", "close");
@@ -453,9 +489,15 @@ void FSWebServer::onHttpDownload(AsyncWebServerRequest *request) {
       
       file.close();
       sdcontrol.relinquishControl();
-      SERIAL_ECHOLN("File sent, SD control released");
+      
+      if constexpr (ENABLE_VERBOSE_LOGGING) {
+        SERIAL_ECHOLN("File sent, SD control released");
+      }
     }
-    SERIAL_ECHOLN("=== Download Complete ===");
+    
+    if constexpr (ENABLE_VERBOSE_LOGGING) {
+      SERIAL_ECHOLN("=== Download Complete ===");
+    }
 }
 
 void FSWebServer::onHttpList(AsyncWebServerRequest * request) {
