@@ -292,12 +292,13 @@ void FSWebServer::onHttpRelinquish(AsyncWebServerRequest *request) {
 }
 
 void FSWebServer::onHttpDownload(AsyncWebServerRequest *request) {
-    DEBUG_LOG("onHttpDownload");
+    SERIAL_ECHOLN("=== HTTP Download Request ===");
+    DEBUG_LOG("Client: %s\n", request->client()->remoteIP().toString().c_str());
 
     switch(sdcontrol.canWeTakeControl())
     { 
       case -1: {
-        DEBUG_LOG("Printer controlling the SD card"); 
+        SERIAL_ECHOLN("ERROR: Printer controlling the SD card");
         request->send(500, "text/plain","DOWNLOAD:SDBUSY");
       }
       return;
@@ -305,21 +306,156 @@ void FSWebServer::onHttpDownload(AsyncWebServerRequest *request) {
       default: break;
     }
   
-    int params = request->params();
-    if (params == 0) {
-      DEBUG_LOG("No params");
+    // Get path parameter
+    if (!request->hasParam("path")) {
+      SERIAL_ECHOLN("ERROR: No path parameter");
       request->send(500, "text/plain","DOWNLOAD:BADARGS");
       return;
     }
-    const AsyncWebParameter* p = request->getParam((size_t)0);
-    String path = p->value();
+    String path = request->getParam("path")->value();
+    SERIAL_ECHO("Requested path: ");
+    SERIAL_ECHOLN(path.c_str());
+    
+    // Check for chunked download parameters
+    bool isChunked = request->hasParam("chunk");
+    int chunkNumber = 0;
+    int chunkSize = 8192; // Default 8KB chunks
+    
+    if (isChunked) {
+      chunkNumber = request->getParam("chunk")->value().toInt();
+      if (request->hasParam("size")) {
+        chunkSize = request->getParam("size")->value().toInt();
+        // Limit chunk size to reasonable range
+        if (chunkSize < 1024) chunkSize = 1024;
+        if (chunkSize > 32768) chunkSize = 32768;
+      }
+      SERIAL_ECHO("Mode: Chunked - chunk #");
+      SERIAL_ECHO(String(chunkNumber).c_str());
+      SERIAL_ECHO(", size: ");
+      SERIAL_ECHO(String(chunkSize).c_str());
+      SERIAL_ECHOLN(" bytes");
+    } else {
+      SERIAL_ECHOLN("Mode: Full file download");
+    }
 
-    AsyncWebServerResponse *response = request->beginResponse(200);
-    response->addHeader("Connection", "close");
-    response->addHeader("Access-Control-Allow-Origin", "*");
-    if (!this->handleFileReadSD(path, request))
+    sdcontrol.takeControl();
+    SERIAL_ECHOLN("SD control acquired");
+    
+    // Open file
+    File file = SD.open(path.c_str());
+    if (!file) {
+      SERIAL_ECHO("ERROR: File not found: ");
+      SERIAL_ECHOLN(path.c_str());
+      sdcontrol.relinquishControl();
       request->send(404, "text/plain", "DOWNLOAD:FileNotFound");
-    delete response; // Free up memory!
+      return;
+    }
+    
+    if (file.isDirectory()) {
+      SERIAL_ECHOLN("ERROR: Path is a directory");
+      file.close();
+      sdcontrol.relinquishControl();
+      request->send(500, "text/plain", "DOWNLOAD:ISDIR");
+      return;
+    }
+    
+    size_t fileSize = file.size();
+    String contentType = getContentType(path, request);
+    
+    SERIAL_ECHO("File opened: ");
+    SERIAL_ECHO(String(fileSize).c_str());
+    SERIAL_ECHO(" bytes, type: ");
+    SERIAL_ECHOLN(contentType.c_str());
+    
+    if (isChunked) {
+      // Calculate chunk boundaries
+      size_t startByte = chunkNumber * chunkSize;
+      
+      if (startByte >= fileSize) {
+        // Chunk beyond file size
+        SERIAL_ECHO("ERROR: Chunk ");
+        SERIAL_ECHO(String(chunkNumber).c_str());
+        SERIAL_ECHOLN(" beyond file size");
+        file.close();
+        sdcontrol.relinquishControl();
+        request->send(416, "text/plain", "DOWNLOAD:RANGE_NOT_SATISFIABLE");
+        return;
+      }
+      
+      size_t endByte = startByte + chunkSize - 1;
+      if (endByte >= fileSize) {
+        endByte = fileSize - 1;
+      }
+      size_t actualChunkSize = endByte - startByte + 1;
+      
+      // Calculate total chunks
+      int totalChunks = (fileSize + chunkSize - 1) / chunkSize;
+      
+      SERIAL_ECHO("Sending chunk ");
+      SERIAL_ECHO(String(chunkNumber).c_str());
+      SERIAL_ECHO("/");
+      SERIAL_ECHO(String(totalChunks).c_str());
+      SERIAL_ECHO(": bytes ");
+      SERIAL_ECHO(String(startByte).c_str());
+      SERIAL_ECHO("-");
+      SERIAL_ECHO(String(endByte).c_str());
+      SERIAL_ECHO("/");
+      SERIAL_ECHOLN(String(fileSize).c_str());
+      
+      // Seek to start position
+      file.seek(startByte);
+      
+      // Create response with chunk data
+      AsyncWebServerResponse *response = request->beginResponse(
+        contentType,
+        actualChunkSize,
+        [file, actualChunkSize](uint8_t *buffer, size_t maxLen, size_t index) mutable -> size_t {
+          if (index >= actualChunkSize) {
+            return 0; // Done
+          }
+          size_t toRead = actualChunkSize - index;
+          if (toRead > maxLen) toRead = maxLen;
+          return file.read(buffer, toRead);
+        }
+      );
+      
+      // Add chunked download headers
+      response->setCode(206); // Partial Content
+      char rangeHeader[64];
+      snprintf(rangeHeader, sizeof(rangeHeader), "bytes %d-%d/%d", startByte, endByte, fileSize);
+      response->addHeader("Content-Range", rangeHeader);
+      response->addHeader("Content-Length", String(actualChunkSize));
+      response->addHeader("X-Total-Chunks", String(totalChunks));
+      response->addHeader("X-Chunk-Number", String(chunkNumber));
+      response->addHeader("Access-Control-Allow-Origin", "*");
+      response->addHeader("Access-Control-Expose-Headers", "Content-Range, X-Total-Chunks, X-Chunk-Number");
+      
+      request->send(response);
+      
+      // Cleanup happens in response callback
+      request->onDisconnect([file]() mutable {
+        file.close();
+        sdcontrol.relinquishControl();
+      });
+      
+    } else {
+      // Send entire file (original behavior)
+      SERIAL_ECHO("Sending entire file: ");
+      SERIAL_ECHO(String(fileSize).c_str());
+      SERIAL_ECHOLN(" bytes");
+      
+      AsyncWebServerResponse *response = request->beginResponse(SD, path, contentType);
+      response->addHeader("Connection", "close");
+      response->addHeader("Access-Control-Allow-Origin", "*");
+      response->addHeader("Content-Length", String(fileSize));
+      
+      request->send(response);
+      
+      file.close();
+      sdcontrol.relinquishControl();
+      SERIAL_ECHOLN("File sent, SD control released");
+    }
+    SERIAL_ECHOLN("=== Download Complete ===");
 }
 
 void FSWebServer::onHttpList(AsyncWebServerRequest * request) {

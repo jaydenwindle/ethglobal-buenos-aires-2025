@@ -623,6 +623,111 @@ function onClickUpdateList() {
     updateList();
 }
 
+function loadImageProgressive(filename, previewDiv) {
+    var filePath = filename.startsWith('/') ? filename : '/' + filename;
+    var chunkSize = 8192; // 8KB chunks
+    var chunks = [];
+    var currentChunk = 0;
+    var totalChunks = null;
+    
+    addDebugLog('Starting progressive load for: ' + filename);
+    
+    // Create progress container
+    var safeId = filename.replace(/[^a-zA-Z0-9]/g, '_');
+    previewDiv.innerHTML = '<div style="padding: 20px; text-align: center; background: #f5f5f5; border-radius: 8px; margin: 10px 0;">' +
+        '<div style="margin-bottom: 10px;">Loading image...</div>' +
+        '<div style="background: #ddd; height: 20px; border-radius: 10px; overflow: hidden;">' +
+        '<div id="progress-' + safeId + '" style="background: #4CAF50; height: 100%; width: 0%; transition: width 0.3s;"></div>' +
+        '</div>' +
+        '<div id="status-' + safeId + '" style="margin-top: 10px; font-size: 0.85rem; color: #666;">Chunk 0...</div>' +
+        '</div>';
+    previewDiv.style.display = 'block';
+    
+    var progressBar = document.getElementById('progress-' + safeId);
+    var statusText = document.getElementById('status-' + safeId);
+    
+    function loadNextChunk() {
+        var chunkUrl = '/cat?path=' + encodeURIComponent(filePath) + '&chunk=' + currentChunk + '&size=' + chunkSize;
+        addDebugLog('Loading chunk ' + currentChunk);
+        
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', chunkUrl, true);
+        xhr.responseType = 'arraybuffer';
+        xhr.timeout = 30000;
+        
+        xhr.onload = function() {
+            if (xhr.status === 200 || xhr.status === 206) {
+                var xTotalChunks = xhr.getResponseHeader('X-Total-Chunks');
+                
+                if (xTotalChunks && totalChunks === null) {
+                    totalChunks = parseInt(xTotalChunks);
+                    addDebugLog('Total chunks: ' + totalChunks);
+                }
+                
+                chunks.push(new Uint8Array(xhr.response));
+                
+                var progress = totalChunks ? ((currentChunk + 1) / totalChunks * 100) : 0;
+                if (progressBar) progressBar.style.width = progress + '%';
+                if (statusText) statusText.textContent = 'Chunk ' + (currentChunk + 1) + (totalChunks ? ' of ' + totalChunks : '') + ' (' + Math.round(progress) + '%)';
+                
+                currentChunk++;
+                
+                if (xhr.status === 206 && (!totalChunks || currentChunk < totalChunks)) {
+                    loadNextChunk();
+                } else {
+                    combineAndDisplay();
+                }
+            } else if (xhr.status === 416) {
+                combineAndDisplay();
+            } else {
+                addDebugLog('Chunk load error: HTTP ' + xhr.status);
+                previewDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: red; background: #ffe6e6; border-radius: 8px; margin: 10px 0;">' +
+                    '<strong>Failed to load chunk ' + currentChunk + '</strong><br>HTTP ' + xhr.status + '</div>';
+            }
+        };
+        
+        xhr.onerror = function() {
+            previewDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: red; background: #ffe6e6; border-radius: 8px; margin: 10px 0;">' +
+                '<strong>Network Error</strong><br>Failed to load chunk ' + currentChunk + '</div>';
+        };
+        
+        xhr.ontimeout = function() {
+            previewDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: red; background: #ffe6e6; border-radius: 8px; margin: 10px 0;">' +
+                '<strong>Timeout</strong><br>Chunk ' + currentChunk + ' took too long</div>';
+        };
+        
+        xhr.send();
+    }
+    
+    function combineAndDisplay() {
+        var totalSize = 0;
+        for (var i = 0; i < chunks.length; i++) {
+            totalSize += chunks[i].length;
+        }
+        
+        addDebugLog('Combining ' + chunks.length + ' chunks, total: ' + totalSize + ' bytes');
+        
+        var combined = new Uint8Array(totalSize);
+        var offset = 0;
+        for (var i = 0; i < chunks.length; i++) {
+            combined.set(chunks[i], offset);
+            offset += chunks[i].length;
+        }
+        
+        var blob = new Blob([combined], { type: getContentType(filename) });
+        var objectUrl = URL.createObjectURL(blob);
+        
+        previewDiv.innerHTML = '<div style="padding: 15px; text-align: center; background: #f5f5f5; border-radius: 8px; margin: 10px 0;">' +
+            '<img src="' + objectUrl + '" style="max-width: 100%; max-height: 600px; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);" />' +
+            '<div style="margin-top: 10px; font-size: 0.85rem; color: #666;">Loaded: ' + filename + ' (' + totalSize + ' bytes, ' + chunks.length + ' chunks)</div>' +
+            '</div>';
+        
+        addDebugLog('Image displayed');
+    }
+    
+    loadNextChunk();
+}
+
 function onClickShowImage(filename, buttonElement) {
     addDebugLog('onClickShowImage called with: ' + filename);
     
@@ -633,95 +738,24 @@ function onClickShowImage(filename, buttonElement) {
     }
     
     var previewId = 'preview-' + filename.replace(/[^a-zA-Z0-9]/g, '_');
-    addDebugLog('Looking for preview div: ' + previewId);
-    
     var previewDiv = document.getElementById(previewId);
     
     if (!previewDiv) {
-        addDebugLog('ERROR: Preview container not found: ' + previewId);
-        alert("Preview container not found: " + previewId);
+        addDebugLog('ERROR: Preview container not found');
+        alert("Preview container not found");
         return;
     }
     
-    addDebugLog('Preview div found, current display: ' + previewDiv.style.display);
-    
-    // Toggle visibility
     if (previewDiv.style.display === 'none' || previewDiv.style.display === '') {
-        // Show image
         buttonElement.textContent = 'Hide';
         buttonElement.classList.add('btn-active');
         
-        // Check if image already loaded
         if (previewDiv.innerHTML === '') {
-            previewDiv.innerHTML = '<div style="padding: 20px; text-align: center;">Loading image...</div>';
-            
-            // Construct URL - filename should already have leading /
-            var filePath = filename.startsWith('/') ? filename : '/' + filename;
-            var imgUrl = '/cat?path=' + encodeURIComponent(filePath);
-            addDebugLog('Loading image from: ' + imgUrl);
-            addDebugLog('File path: ' + filePath);
-            
-            // Use XHR to get better error information
-            var xhr = new XMLHttpRequest();
-            xhr.open('GET', imgUrl, true);
-            xhr.responseType = 'blob';
-            xhr.timeout = 60000; // 60 second timeout for large images
-            
-            xhr.onload = function() {
-                addDebugLog('XHR onload - status: ' + xhr.status);
-                if (xhr.status === 200) {
-                    var blob = xhr.response;
-                    var objectUrl = URL.createObjectURL(blob);
-                    addDebugLog('Image loaded successfully, blob size: ' + blob.size);
-                    previewDiv.innerHTML = '<div style="padding: 15px; text-align: center; background: #f5f5f5; border-radius: 8px; margin: 10px 0;">' +
-                        '<img src="' + objectUrl + '" style="max-width: 100%; max-height: 600px; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);" />' +
-                        '<div style="margin-top: 10px; font-size: 0.85rem; color: #666;">Loaded: ' + filename + ' (' + blob.size + ' bytes)</div>' +
-                        '</div>';
-                    previewDiv.style.display = 'block';
-                } else {
-                    var errorMsg = 'HTTP ' + xhr.status;
-                    addDebugLog('Image load failed: ' + errorMsg);
-                    previewDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: red; background: #ffe6e6; border-radius: 8px; margin: 10px 0;">' +
-                        '<strong>Failed to load image</strong><br>' +
-                        'URL: ' + imgUrl + '<br>' +
-                        'Error: ' + errorMsg + '<br>' +
-                        'Filename: ' + filename +
-                        '</div>';
-                    previewDiv.style.display = 'block';
-                }
-            };
-            
-            xhr.onerror = function() {
-                addDebugLog('XHR error for: ' + imgUrl);
-                previewDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: red; background: #ffe6e6; border-radius: 8px; margin: 10px 0;">' +
-                    '<strong>Network Error</strong><br>' +
-                    'URL: ' + imgUrl + '<br>' +
-                    'Could not connect to server<br>' +
-                    'Filename: ' + filename +
-                    '</div>';
-                previewDiv.style.display = 'block';
-            };
-            
-            xhr.ontimeout = function() {
-                addDebugLog('XHR timeout for: ' + imgUrl);
-                previewDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: red; background: #ffe6e6; border-radius: 8px; margin: 10px 0;">' +
-                    '<strong>Timeout</strong><br>' +
-                    'URL: ' + imgUrl + '<br>' +
-                    'Request took too long<br>' +
-                    'Filename: ' + filename +
-                    '</div>';
-                previewDiv.style.display = 'block';
-            };
-            
-            xhr.send();
-            addDebugLog('XHR request sent');
+            loadImageProgressive(filename, previewDiv);
         } else {
-            addDebugLog('Image already loaded, just showing');
             previewDiv.style.display = 'block';
         }
     } else {
-        // Hide image
-        addDebugLog('Hiding image');
         previewDiv.style.display = 'none';
         buttonElement.textContent = 'Show';
         buttonElement.classList.remove('btn-active');
