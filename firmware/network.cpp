@@ -1,3 +1,10 @@
+/**
+ * Network Configuration
+ * 
+ * To change the Access Point settings, scroll down to the 
+ * "ACCESS POINT CONFIGURATION" section below (around line 25)
+ */
+
 #include "network.h"
 #include "serial.h"
 #include "config.h"
@@ -14,16 +21,26 @@
 
 #ifdef ESP32
   #include <WiFi.h>
+  // Compatibility for ESP32 Core 3.x
+  #if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
+  #include <NetworkInterface.h>
+  #endif
 #elif defined(ESP8266)
   #include <ESP8266WiFi.h>
 #endif
 
-DNSServer dnsServer;
+// ============================================
+// ACCESS POINT CONFIGURATION
+// Change these values to customize your AP
+// ============================================
+const char* AP_SSID     = "PERMA";              // AP WiFi name
+const char* AP_PASSWORD = "FuturePrimitive";    // AP WiFi password (min 8 chars, or empty "" for open network)
+IPAddress   AP_local_ip(192, 168, 4, 1);        // AP IP address
+IPAddress   AP_gateway(192, 168, 4, 1);         // AP gateway (usually same as IP)
+IPAddress   AP_subnet(255, 255, 255, 0);        // AP subnet mask
+// ============================================
 
-IPAddress AP_local_ip(192, 168, 4, 1);
-IPAddress AP_gateway(192, 168, 4, 1);
-IPAddress AP_subnet(255, 255, 255, 0);  // Subnet
-const char* AP_SSID  = "SD-WIFI-PRO";
+DNSServer dnsServer;
 
 String IpAddress2String(const IPAddress& ipAddress)
 {
@@ -164,10 +181,23 @@ bool Network::isSTAmode() {
 void Network::startSoftAP() {
   WiFi.mode(WIFI_AP_STA);
   WiFi.softAPConfig(AP_local_ip, AP_gateway, AP_subnet);
-  if (WiFi.softAP(AP_SSID))
+  
+  // Start AP with or without password
+  bool apStarted;
+  if (strlen(AP_PASSWORD) >= 8) {
+    apStarted = WiFi.softAP(AP_SSID, AP_PASSWORD);  // With password
+  } else {
+    apStarted = WiFi.softAP(AP_SSID);               // Open network
+  }
+  
+  if (apStarted)
   {                           
     _stamode = false;
-    Serial.println("SD-WIFI-PRO SoftAP started.");
+    Serial.print("AP '");
+    Serial.print(AP_SSID);
+    Serial.println("' started.");
+    Serial.print("Password: ");
+    Serial.println(strlen(AP_PASSWORD) >= 8 ? AP_PASSWORD : "None (Open Network)");
     Serial.print("IP address = ");
     Serial.println(WiFi.softAPIP());
     Serial.println(String("MAC address = ")  + WiFi.softAPmacAddress().c_str());

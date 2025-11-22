@@ -329,3 +329,126 @@ a:hover, a:focus, a.active {
 @media (max-width: 420px) {
 
 }
+
+/* WiFi Status Bar Styling */
+#wifiStatus {
+    margin-bottom: 0;
+    border-radius: 8px;
+    font-size: 1rem;
+    padding: 12px 20px;
+    border: none;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+#wifiStatus strong {
+    font-weight: 600;
+}
+
+.alert-success {
+    background-color: #d4edda;
+    color: #155724;
+}
+
+.alert-warning {
+    background-color: #fff3cd;
+    color: #856404;
+}
+
+.alert-danger {
+    background-color: #f8d7da;
+    color: #721c24;
+}
+
+.alert-info {
+    background-color: #d1ecf1;
+    color: #0c5460;
+}
+
+.alert-secondary {
+    background-color: #e2e3e5;
+    color: #383d41;
+}
+
+/* File Tree Styles */
+.file-tree-item {
+    display: flex;
+    align-items: center;
+    padding: 8px 10px;
+    border-bottom: 1px solid #f0f0f0;
+    transition: background-color 0.2s ease;
+}
+
+.file-tree-item:hover {
+    background-color: #f8f8f8;
+}
+
+.folder-toggle {
+    cursor: pointer;
+    width: 20px;
+    font-size: 12px;
+    user-select: none;
+    color: #666;
+}
+
+.file-spacer {
+    width: 20px;
+    display: inline-block;
+}
+
+.file-icon {
+    margin: 0 8px;
+    font-size: 18px;
+}
+
+.file-name {
+    flex: 1;
+    font-weight: 500;
+    color: #333;
+    word-break: break-word;
+}
+
+.file-size {
+    color: #666;
+    font-size: 0.9rem;
+    margin-right: 10px;
+    min-width: 80px;
+    text-align: right;
+}
+
+.file-actions {
+    display: flex;
+    gap: 5px;
+}
+
+.btn-small {
+    padding: 5px 12px;
+    background-color: #689bd0;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    transition: all 0.2s ease;
+}
+
+.btn-small:hover {
+    background-color: #6ba1d5;
+}
+
+.folder-contents {
+    border-left: 2px solid #e0e0e0;
+    margin-left: 10px;
+}
+
+@media (max-width: 767px) {
+    .file-tree-item {
+        flex-wrap: wrap;
+    }
+    
+    .file-actions {
+        width: 100%;
+        margin-top: 5px;
+        justify-content: flex-end;
+        margin-left: 28px;
+    }
+}

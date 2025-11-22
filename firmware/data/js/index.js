@@ -1,11 +1,166 @@
 var renderPage = true;
 var sdbusy = false;
+var debugLogs = [];
 
 if (navigator.userAgent.indexOf('MSIE') !== -1
     || navigator.appVersion.indexOf('Trident/') > 0) {
     /* Microsoft Internet Explorer detected in. */
     alert("Please view this in a modern browser such as Chrome or Microsoft Edge.");
     renderPage = false;
+}
+
+function addDebugLog(message) {
+    var timestamp = new Date().toLocaleTimeString();
+    debugLogs.push('[' + timestamp + '] ' + message);
+    if (debugLogs.length > 20) {
+        debugLogs.shift(); // Keep only last 20 logs
+    }
+    updateDebugPanel();
+}
+
+function updateDebugPanel() {
+    var panel = document.getElementById('debugPanel');
+    var info = document.getElementById('debugInfo');
+    if (debugLogs.length > 0) {
+        panel.style.display = 'block';
+        info.textContent = debugLogs.join('\n');
+    }
+}
+
+function clearDebugLog() {
+    debugLogs = [];
+    document.getElementById('debugPanel').style.display = 'none';
+}
+
+function updateWifiStatus() {
+    var xhr = new XMLHttpRequest();
+    xhr.timeout = 5000; // 5 second timeout
+    
+    xhr.onreadystatechange = function () {
+        if (xhr.readyState == 4) {
+            var statusDiv = document.getElementById('wifiStatus');
+            var statusText = document.getElementById('wifiStatusText');
+            
+            if (xhr.status == 200) {
+                var resp = xhr.responseText;
+                addDebugLog('WiFi status: ' + resp);
+                
+                if (resp.startsWith('WIFI:')) {
+                    var status = resp.substring(5); // Remove "WIFI:" prefix
+                    
+                    if (status.includes('Connected:')) {
+                        var ip = status.split(':')[1];
+                        statusText.innerHTML = 'Connected - IP: ' + ip;
+                        statusDiv.className = 'alert alert-success';
+                    } else if (status.includes('Connecting')) {
+                        statusText.innerHTML = 'Connecting...';
+                        statusDiv.className = 'alert alert-warning';
+                    } else if (status.includes('Failed')) {
+                        statusText.innerHTML = 'Connection Failed - AP Mode';
+                        statusDiv.className = 'alert alert-danger';
+                    } else if (status.includes('AP_Mode')) {
+                        statusText.innerHTML = 'AP Mode - SSID: PERMA';
+                        statusDiv.className = 'alert alert-info';
+                    } else {
+                        statusText.innerHTML = 'Unknown';
+                        statusDiv.className = 'alert alert-secondary';
+                    }
+                } else {
+                    statusText.innerHTML = 'Unknown';
+                    statusDiv.className = 'alert alert-secondary';
+                }
+            } else {
+                addDebugLog('WiFi status error: HTTP ' + xhr.status);
+                statusText.innerHTML = 'Cannot reach device';
+                statusDiv.className = 'alert alert-warning';
+            }
+        }
+    };
+    
+    xhr.ontimeout = function() {
+        addDebugLog('WiFi status timeout');
+        var statusDiv = document.getElementById('wifiStatus');
+        var statusText = document.getElementById('wifiStatusText');
+        statusText.innerHTML = 'Request timeout';
+        statusDiv.className = 'alert alert-warning';
+    };
+    
+    xhr.onerror = function() {
+        addDebugLog('WiFi status connection error');
+        var statusDiv = document.getElementById('wifiStatus');
+        var statusText = document.getElementById('wifiStatusText');
+        statusText.innerHTML = 'Connection error';
+        statusDiv.className = 'alert alert-warning';
+    };
+    
+    try {
+        xhr.open('GET', '/wifistatus', true);
+        xhr.send(null);
+    } catch(e) {
+        addDebugLog('WiFi status exception: ' + e.message);
+    }
+}
+
+function updateBTStatus() {
+    var xhr = new XMLHttpRequest();
+    xhr.timeout = 5000;
+    
+    xhr.onreadystatechange = function () {
+        if (xhr.readyState == 4) {
+            var statusDiv = document.getElementById('btStatus');
+            var statusText = document.getElementById('btStatusText');
+            
+            if (xhr.status == 200) {
+                var resp = xhr.responseText;
+                addDebugLog('BT status: ' + resp);
+                
+                if (resp.startsWith('BT:')) {
+                    var status = resp.substring(3);
+                    
+                    if (status === 'Connected') {
+                        statusText.innerHTML = 'Connected';
+                        statusDiv.className = 'alert alert-success';
+                    } else if (status === 'Ready') {
+                        statusText.innerHTML = 'Ready (No client)';
+                        statusDiv.className = 'alert alert-info';
+                    } else if (status === 'Disabled') {
+                        statusText.innerHTML = 'Disabled';
+                        statusDiv.className = 'alert alert-secondary';
+                    } else {
+                        statusText.innerHTML = 'Unknown';
+                        statusDiv.className = 'alert alert-secondary';
+                    }
+                } else {
+                    statusText.innerHTML = 'Unknown';
+                    statusDiv.className = 'alert alert-secondary';
+                }
+            } else {
+                statusText.innerHTML = 'Error';
+                statusDiv.className = 'alert alert-warning';
+            }
+        }
+    };
+    
+    xhr.ontimeout = function() {
+        var statusDiv = document.getElementById('btStatus');
+        var statusText = document.getElementById('btStatusText');
+        statusText.innerHTML = 'Timeout';
+        statusDiv.className = 'alert alert-warning';
+    };
+    
+    xhr.onerror = function() {
+        var statusDiv = document.getElementById('btStatus');
+        var statusText = document.getElementById('btStatusText');
+        statusText.innerHTML = 'Error';
+        statusDiv.className = 'alert alert-warning';
+    };
+    
+    try {
+        xhr.open('GET', '/btstatus', true);
+        xhr.send(null);
+    } catch(e) {
+        addDebugLog('BT status exception: ' + e.message);
+    }
 }
 
 function httpPost(filename, data, type) {
@@ -18,32 +173,68 @@ function httpPost(filename, data, type) {
 }
 
 function httpGetList(path) {
-    xmlHttp = new XMLHttpRequest(path);
+    addDebugLog('Requesting file list for: ' + path);
+    xmlHttp = new XMLHttpRequest();
+    xmlHttp.timeout = 10000; // 10 second timeout
+    
     xmlHttp.onload = function () {
         sdbusy = false;
     }
+    
     xmlHttp.onreadystatechange = function () {
-        var resp = xmlHttp.responseText;
         if (xmlHttp.readyState == 4) {
-            console.log("Get response of path:");
-            console.log(resp);
+            var resp = xmlHttp.responseText;
+            addDebugLog('List response status: ' + xmlHttp.status);
+            addDebugLog('Response length: ' + resp.length + ' chars');
+            addDebugLog('Response preview: ' + resp.substring(0, 100));
 
-            if (xmlHttp.status == 200)
-                onHttpList(resp);
-
-            if( resp.startsWith('LIST:')) {
-                if(resp.includes('SDBUSY')) {
-                    alert("Printer is busy, wait for 10s and try again");
-                } else if(resp.includes('BADARGS') || 
-                            resp.includes('BADPATH') ||
-                            resp.includes('NOTDIR')) {
-                    alert("Bad args, please try again or reset the module");
+            if (xmlHttp.status == 200) {
+                if (resp.startsWith('LIST:')) {
+                    if(resp.includes('SDBUSY')) {
+                        addDebugLog('SD card busy');
+                        alert("Printer is busy, wait for 10s and try again");
+                        sdbusy = false;
+                    } else if(resp.includes('BADARGS') || 
+                                resp.includes('BADPATH') ||
+                                resp.includes('NOTDIR')) {
+                        addDebugLog('Bad request: ' + resp);
+                        alert("Bad args, please try again or reset the module");
+                        sdbusy = false;
+                    }
+                } else {
+                    // Valid JSON response
+                    addDebugLog('Parsing JSON response...');
+                    onHttpList(resp);
                 }
+            } else {
+                addDebugLog('HTTP error: ' + xmlHttp.status);
+                $("#filelistbox").html("<div style='padding: 20px; text-align: center; color: red;'>Error loading files (HTTP " + xmlHttp.status + ")</div>");
+                sdbusy = false;
             }
         }
     };
-    xmlHttp.open('GET', '/list?dir=' + path, true);
-    xmlHttp.send(null);
+    
+    xmlHttp.ontimeout = function() {
+        addDebugLog('Request timeout');
+        alert("Request timeout - SD card may be busy");
+        $("#filelistbox").html("<div style='padding: 20px; text-align: center; color: red;'>Request timeout</div>");
+        sdbusy = false;
+    };
+    
+    xmlHttp.onerror = function() {
+        addDebugLog('Request error');
+        alert("Error loading file list");
+        $("#filelistbox").html("<div style='padding: 20px; text-align: center; color: red;'>Connection error</div>");
+        sdbusy = false;
+    };
+    
+    try {
+        xmlHttp.open('GET', '/list?dir=' + path, true);
+        xmlHttp.send(null);
+    } catch(e) {
+        addDebugLog('Exception: ' + e.message);
+        sdbusy = false;
+    }
 }
 
 function httpGetGcode(path) {
@@ -238,29 +429,159 @@ function niceBytes(x){
     return(n.toFixed(n < 10 && l > 0 ? 1 : 0) + ' ' + units[l]);
 }
 
-function createFilelistItem(i,type,filename,size) {
-    var data =  "<div class=\"media\">\n" + 
-                    "<div class=\"file-index\" >"+i+"</div>\n" +
-                    "<div class=\"media-body tm-bg-gray\">\n" +
-                        "<div class=\"tm-description-box\">\n" +
-                            "<h5 id=filename class=\"tm-text-blue\">"+filename+"</h5>\n" +
-                            "<p class=\"mb-0\">Type:"+type+" | Size:"+size+" Bytes</p>\n" +
-                        "</div>\n" +
-                        "<div class=\"tm-dd-box\">\n" +
-                            "<input id="+filename+" type=\"button\" value=\"Delete\" class=\"btn tm-bg-blue tm-text-white tm-dd\" onclick=javascript:onClickDelete(id) />" +
-                            "<input id="+filename+" type=\"button\" method=\"GET\" value=\"Download\" class=\"btn tm-bg-blue tm-text-white tm-dd\" onclick=javascript:onClickDownload(id) />" +
-                        "</div>\n" +
-                    "</div>\n" +
-                "</div>";
+function createFileListItem(item, level) {
+    level = level || 0;
+    var indent = level * 20;
+    var isDir = item.type === 'dir';
+    var icon = isDir ? '📁' : '📄';
+    var cleanPath = item.path || item.name;
+    
+    var data = "<div class=\"file-tree-item\" data-path=\"" + cleanPath + "\" style=\"padding-left: " + indent + "px;\">\n";
+    
+    if (isDir) {
+        data += "<span class=\"folder-toggle\" onclick=\"loadFolder('" + cleanPath + "', this)\">▶</span>\n";
+    } else {
+        data += "<span class=\"file-spacer\"></span>\n";
+    }
+    
+    data += "<span class=\"file-icon\">" + icon + "</span>\n";
+    data += "<span class=\"file-name\">" + item.name + "</span>\n";
+    
+    if (!isDir) {
+        data += "<span class=\"file-size\">" + niceBytes(item.size) + "</span>\n";
+        data += "<div class=\"file-actions\">\n";
+        data += "<button class=\"btn-small\" onclick=\"onClickDelete('" + cleanPath + "')\">Delete</button>\n";
+        data += "<button class=\"btn-small\" onclick=\"onClickDownload('" + cleanPath + "')\">Download</button>\n";
+        data += "</div>\n";
+    } else {
+        data += "<span class=\"file-size\">Folder</span>\n";
+    }
+    
+    data += "</div>\n";
+    data += "<div class=\"folder-contents\" style=\"display: none;\"></div>\n";
+    
     return data;
 }
 
+function loadFolder(path, toggleElement) {
+    var folderItem = toggleElement.parentElement;
+    var folderContents = folderItem.nextElementSibling;
+    
+    if (!folderContents || !folderContents.classList.contains('folder-contents')) {
+        return;
+    }
+    
+    // If already loaded, just toggle
+    if (folderContents.getAttribute('data-loaded') === 'true') {
+        if (folderContents.style.display === 'none') {
+            folderContents.style.display = 'block';
+            toggleElement.textContent = '▼';
+        } else {
+            folderContents.style.display = 'none';
+            toggleElement.textContent = '▶';
+        }
+        return;
+    }
+    
+    // Calculate nesting level
+    var level = 0;
+    var parent = folderItem.parentElement;
+    while (parent && parent.id !== 'filelistbox') {
+        if (parent.classList.contains('folder-contents')) {
+            level++;
+        }
+        parent = parent.parentElement;
+    }
+    
+    // Ensure path starts with /
+    var requestPath = path;
+    if (!requestPath.startsWith('/')) {
+        requestPath = '/' + requestPath;
+    }
+    
+    // Load folder contents
+    addDebugLog('Loading folder: ' + requestPath);
+    folderContents.innerHTML = '<div style="padding: 10px 10px 10px ' + ((level + 1) * 20 + 10) + 'px; color: #999;">Loading...</div>';
+    folderContents.style.display = 'block';
+    toggleElement.textContent = '▼';
+    
+    var xhr = new XMLHttpRequest();
+    xhr.timeout = 10000;
+    
+    xhr.onreadystatechange = function() {
+        if (xhr.readyState == 4) {
+            if (xhr.status == 200) {
+                var resp = xhr.responseText;
+                
+                // Check for error responses
+                if (resp.startsWith('LIST:')) {
+                    addDebugLog('Server error: ' + resp);
+                    folderContents.innerHTML = '<div style="padding: 10px; color: red;">Server error: ' + resp + '</div>';
+                    return;
+                }
+                
+                try {
+                    var items = JSON.parse(resp);
+                    addDebugLog('Loaded ' + items.length + ' items from ' + requestPath);
+                    
+                    if (items.length === 0) {
+                        folderContents.innerHTML = '<div style="padding: 10px 10px 10px ' + ((level + 1) * 20 + 10) + 'px; color: #999;">Empty folder</div>';
+                    } else {
+                        var html = '';
+                        for (var i = 0; i < items.length; i++) {
+                            html += createFileListItem(items[i], level + 1);
+                        }
+                        folderContents.innerHTML = html;
+                    }
+                    folderContents.setAttribute('data-loaded', 'true');
+                } catch (e) {
+                    addDebugLog('Error parsing folder contents: ' + e.message);
+                    addDebugLog('Response was: ' + resp.substring(0, 200));
+                    folderContents.innerHTML = '<div style="padding: 10px; color: red;">Error parsing response</div>';
+                }
+            } else {
+                addDebugLog('Error loading folder: HTTP ' + xhr.status + ' - ' + xhr.responseText);
+                folderContents.innerHTML = '<div style="padding: 10px; color: red;">HTTP ' + xhr.status + ': ' + xhr.responseText + '</div>';
+            }
+        }
+    };
+    
+    xhr.ontimeout = function() {
+        addDebugLog('Folder load timeout');
+        folderContents.innerHTML = '<div style="padding: 10px; color: red;">Timeout</div>';
+    };
+    
+    xhr.onerror = function() {
+        addDebugLog('Folder load error');
+        folderContents.innerHTML = '<div style="padding: 10px; color: red;">Connection error</div>';
+    };
+    
+    xhr.open('GET', '/list?dir=' + encodeURIComponent(requestPath), true);
+    xhr.send(null);
+}
+
+
+
 function onHttpList(response) {
-    var list = JSON.parse(response);
-    for (var i = 0; i < list.length; i++) {
-        // console.log(list[i].name);
-        // console.log(list[i].size);
-        $("#filelistbox").append(createFilelistItem(i+1,list[i].type,list[i].name,niceBytes(list[i].size)));
+    try {
+        var list = JSON.parse(response);
+        addDebugLog('Parsed ' + list.length + ' items');
+        
+        if (list.length === 0) {
+            $("#filelistbox").html("<div style='padding: 20px; text-align: center; color: #666;'>No files found on SD card</div>");
+            return;
+        }
+        
+        var html = "";
+        for (var i = 0; i < list.length; i++) {
+            html += createFileListItem(list[i]);
+        }
+        
+        $("#filelistbox").html(html);
+        addDebugLog('File list rendered successfully');
+    } catch (e) {
+        addDebugLog('Error: ' + e.message);
+        $("#filelistbox").html("<div style='padding: 20px; text-align: center; color: red;'>Error: " + e.message + "</div>");
     }
 }
 
