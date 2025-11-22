@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "app",
-    "slug": "react-native-expo",
+    "name": "digicam",
+    "slug": "digicam",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -14,7 +14,8 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.jaydenwindle.app"
+      "bundleIdentifier": "eth.digicam.app",
+      "appleTeamId": "VJSWZB6H26"
     },
     "android": {
       "adaptiveIcon": {
@@ -22,7 +23,12 @@
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.jaydenwindle.app"
+      "package": "eth.digicam.app",
+      "permissions": [
+        "android.permission.BLUETOOTH",
+        "android.permission.BLUETOOTH_ADMIN",
+        "android.permission.BLUETOOTH_CONNECT"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -34,7 +40,8 @@
     "plugins": [
       "expo-secure-store",
       "expo-asset",
-      "expo-web-browser"
+      "expo-web-browser",
+      "react-native-ble-plx"
     ]
   }
 }

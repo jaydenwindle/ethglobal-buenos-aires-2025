@@ -6,13 +6,12 @@ import {
   Config,
 } from "@coinbase/cdp-hooks";
 import { StatusBar } from "expo-status-bar";
-import { StyleSheet, Text, View, Alert, ScrollView, SafeAreaView } from "react-native";
+import { StyleSheet, Text, View, Alert, SafeAreaView } from "react-native";
 
-import Transaction from "./Transaction";
 import { ThemeProvider, useTheme } from "./theme/ThemeContext";
 import { SignInForm } from "./components/SignInForm";
 import { DarkModeToggle } from "./components/DarkModeToggle";
-import { WalletHeader } from "./components/WalletHeader";
+import { BLEStatus } from "./components/BLEStatus";
 
 const cdpConfig = {
   projectId: process.env.EXPO_PUBLIC_CDP_PROJECT_ID,
@@ -141,18 +140,7 @@ function CDPApp() {
         {!isSignedIn ? (
           <SignInForm />
         ) : (
-          <>
-            <WalletHeader onSignOut={handleSignOut} />
-            <ScrollView
-              style={styles.scrollView}
-              showsVerticalScrollIndicator={false}
-              contentContainerStyle={styles.scrollContent}
-            >
-              <View style={styles.userContainer}>
-                <Transaction onSuccess={() => console.log("Transaction successful!")} />
-              </View>
-            </ScrollView>
-          </>
+          <BLEStatus />
         )}
       </View>
 

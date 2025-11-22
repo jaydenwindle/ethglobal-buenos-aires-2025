@@ -16,6 +16,7 @@ Built at ETHGlobal Buenos Aires 2025
 
 # Bluetooth API
 - toggle wifi + server on/off
+- get wifi ssid + password
 - get photo count
 
 # Web API
