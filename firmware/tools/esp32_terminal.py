@@ -82,7 +82,16 @@ class ESP32Terminal:
         
         try:
             await self.client.write_gatt_char(RX_UUID, command.encode('utf-8'))
-            await asyncio.sleep(0.3)  # Wait for response
+            
+            # Wait longer for commands that need more time
+            command_upper = command.upper().strip()
+            if command_upper in ['WAKE', 'WIFI ON', 'WIFI AP', 'WIFI CONNECT']:
+                await asyncio.sleep(2.0)  # Wait 2 seconds for WiFi operations
+            elif command_upper in ['STATUS', 'WIFI SCAN']:
+                await asyncio.sleep(0.5)  # Wait 0.5 seconds for status/scan
+            else:
+                await asyncio.sleep(0.3)  # Default wait
+            
             return True
         except Exception as e:
             print(f"Error sending command: {e}")

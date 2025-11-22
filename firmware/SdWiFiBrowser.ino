@@ -15,6 +15,7 @@ bool wifiEnabled = false;
 bool serverStarted = false;
 unsigned long lastActivityTime = 0;
 const bool WIFI_ENABLED_ON_START = true;
+bool pendingCredentialsSend = false;
 
 void setup() {
   SERIAL_INIT(115200);
@@ -86,7 +87,25 @@ void exitSleepMode() {
   sleepMode = false;
   lastActivityTime = millis();
   
-  sendAPCredentials();
+  // Start WiFi and server if not already started
+  if (!wifiEnabled || WiFi.getMode() == WIFI_OFF) {
+    SERIAL_ECHOLN("Starting WiFi in AP mode...");
+    if (!serverStarted) {
+      SPIFFS.begin();
+      sdcontrol.setup();
+      serverStarted = true;
+    }
+    network.startSoftAP();  // Start in AP mode
+    server.begin(&SPIFFS);
+    wifiEnabled = true;
+    
+    // Flag to send credentials after AP is confirmed running in main loop
+    pendingCredentialsSend = true;
+    SERIAL_ECHOLN("WiFi AP starting...");
+  } else {
+    // WiFi already running, send credentials immediately
+    sendAPCredentials();
+  }
   
   SERIAL_ECHOLN("Device awake.");
 }
@@ -297,6 +316,28 @@ void sendAPCredentials() {
 }
 
 void loop() {
+  // Check if we need to send credentials after AP startup
+  if (pendingCredentialsSend) {
+    // Wait a bit more for AP to stabilize
+    static unsigned long apStartTime = 0;
+    if (apStartTime == 0) {
+      apStartTime = millis();
+    }
+    
+    if (millis() - apStartTime > 1500) {
+      // Verify AP is running
+      if (WiFi.getMode() == WIFI_AP || WiFi.getMode() == WIFI_AP_STA) {
+        SERIAL_ECHOLN("WiFi AP confirmed running");
+        sendAPCredentials();
+      } else {
+        SERIAL_ECHOLN("ERROR: WiFi AP failed to start");
+        BT.write("ERROR: AP failed to start\n");
+      }
+      pendingCredentialsSend = false;
+      apStartTime = 0;
+    }
+  }
+  
   // Check if a Bluetooth client just connected
   if (BT.checkAndClearJustConnected()) {
     delay(500); // Small delay to ensure client is ready
