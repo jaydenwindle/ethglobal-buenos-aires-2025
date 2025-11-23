@@ -868,10 +868,16 @@ export const MintPhotoScreen = () => {
     setMintError(undefined);
 
     try {
+      // Parse filename to create symbol (remove extension)
+      const fileName = snapshot.context.downloadingFile?.name || '';
+      const symbolFromFile = fileName.replace(/\.[^/.]+$/, '').toUpperCase();
+      const randomNumber = Math.floor(1000 + Math.random() * 9000);
+      const symbol = symbolFromFile || `PHOTO-${randomNumber}`;
+
       const args = {
         creator: smartAccount as Address,
         name: "digicam.eth photo",
-        symbol: "PHOTO",
+        symbol: symbol,
         metadata: { type: "RAW_URI" as const, uri: snapshot.context.metadataUri },
         currency: CreateConstants.ContentCoinCurrencies.ZORA,
         chainId: base.id,
@@ -883,16 +889,16 @@ export const MintPhotoScreen = () => {
 
       console.log('Sending user operation with calls:', calls);
 
-      // Send user operation
+      // Send user operation (only use first call)
       await sendUserOperation({
         evmSmartAccount: smartAccount,
         network: "base",
         useCdpPaymaster: true,
-        calls: calls.map(call => ({
-          to: call.to as Address,
-          data: call.data as `0x${string}`,
-          value: call.value || 0n,
-        })),
+        calls: [{
+          to: calls[0].to as Address,
+          data: calls[0].data as `0x${string}`,
+          value: calls[0].value || 0n,
+        }],
       });
     } catch (error: any) {
       const errorMessage = error?.message || error?.toString() || 'Failed to mint coin';
@@ -989,6 +995,7 @@ export const MintPhotoScreen = () => {
     },
     walletContainer: {
       width: '100%',
+      alignSelf: 'stretch',
       marginBottom: 16,
       padding: 12,
       backgroundColor: colors.cardBackground,
