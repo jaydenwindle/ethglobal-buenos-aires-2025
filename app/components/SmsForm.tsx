@@ -39,9 +39,6 @@ export const SmsForm: React.FC<SmsFormProps> = ({ onSuccess }) => {
   return (
     <>
       <View style={styles.header}>
-        <View style={styles.logoCircle}>
-          <Text style={styles.logoText}>C</Text>
-        </View>
         <Text style={styles.title}>Sign in</Text>
       </View>
       <View style={styles.form}>

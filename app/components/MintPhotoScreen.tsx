@@ -7,6 +7,7 @@ import { BleManager, State, Device } from "react-native-ble-plx";
 import { Buffer } from "buffer";
 import WifiManager from "react-native-wifi-reborn";
 import { SDCardAPI, FileEntry } from "../services/sdcard";
+import { useTheme } from "../theme/ThemeContext";
 
 // Types for the state machine
 type MintPhotoContext = {
@@ -576,6 +577,7 @@ const bluetoothMachine = createMachine({
 
 export const MintPhotoScreen = () => {
   const [snapshot, send] = useMachine(bluetoothMachine)
+  const { colors } = useTheme()
 
   // Cleanup BLE manager on unmount
   useEffect(() => {
@@ -585,11 +587,96 @@ export const MintPhotoScreen = () => {
     };
   }, []);
 
+  const styles = StyleSheet.create({
+    container: {
+      flex: 1,
+      justifyContent: 'center',
+      alignItems: 'center',
+      padding: 20,
+      backgroundColor: colors.background,
+    },
+    loadingContainer: {
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: 20,
+    },
+    loadingText: {
+      fontSize: 18,
+      fontWeight: 'bold',
+      marginTop: 16,
+      textAlign: 'center',
+      color: colors.text,
+    },
+    loadingSubtext: {
+      fontSize: 14,
+      color: colors.textSecondary,
+      marginTop: 8,
+      textAlign: 'center',
+    },
+    errorContainer: {
+      alignItems: 'center',
+      padding: 20,
+      backgroundColor: colors.errorBackground,
+      borderRadius: 8,
+      margin: 10,
+    },
+    errorText: {
+      fontSize: 18,
+      fontWeight: 'bold',
+      color: colors.accent,
+      marginBottom: 8,
+    },
+    errorDetail: {
+      fontSize: 12,
+      color: colors.textSecondary,
+      marginTop: 8,
+      textAlign: 'center',
+    },
+    successContainer: {
+      alignItems: 'center',
+      padding: 20,
+    },
+    successText: {
+      fontSize: 20,
+      fontWeight: 'bold',
+      color: colors.accent,
+      marginBottom: 16,
+      textAlign: 'center',
+    },
+    progressText: {
+      fontSize: 24,
+      fontWeight: 'bold',
+      marginTop: 16,
+      color: colors.accent,
+    },
+    progressBarContainer: {
+      width: 300,
+      height: 20,
+      backgroundColor: colors.border,
+      borderRadius: 10,
+      marginTop: 10,
+      overflow: 'hidden',
+    },
+    progressBar: {
+      height: '100%',
+      backgroundColor: colors.accent,
+      borderRadius: 10,
+    },
+    downloadedImage: {
+      width: 300,
+      height: 300,
+      marginTop: 20,
+      borderRadius: 8,
+      borderWidth: 1,
+      borderColor: colors.border,
+    },
+  });
+
   return (
     <View style={styles.container}>
       {snapshot.value === 'CheckingBluetooth' && (
         <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#0000ff" />
+          <ActivityIndicator size="large" color={colors.accent} />
           <Text style={styles.loadingText}>Checking Bluetooth...</Text>
         </View>
       )}
@@ -597,7 +684,7 @@ export const MintPhotoScreen = () => {
       {snapshot.value === 'BluetoothNotReady' && (
         <View style={styles.errorContainer}>
           <Text style={styles.errorText}>Bluetooth is not ready</Text>
-          <Text>Please enable bluetooth.</Text>
+          <Text style={{ color: colors.text }}>Please enable bluetooth.</Text>
           {snapshot.context.error && (
             <Text style={styles.errorDetail}>{snapshot.context.error}</Text>
           )}
@@ -607,7 +694,7 @@ export const MintPhotoScreen = () => {
 
       {snapshot.value === 'ScanningAndConnecting' && (
         <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#0000ff" />
+          <ActivityIndicator size="large" color={colors.accent} />
           <Text style={styles.loadingText}>Scanning for {DEVICE_NAME}...</Text>
           <Text style={styles.loadingSubtext}>Connecting to device</Text>
         </View>
@@ -616,7 +703,7 @@ export const MintPhotoScreen = () => {
       {snapshot.value === 'ConnectionFailed' && (
         <View style={styles.errorContainer}>
           <Text style={styles.errorText}>Connection Failed</Text>
-          <Text>Failed to connect to {DEVICE_NAME}</Text>
+          <Text style={{ color: colors.text }}>Failed to connect to {DEVICE_NAME}</Text>
           {snapshot.context.error && (
             <Text style={styles.errorDetail}>{snapshot.context.error}</Text>
           )}
@@ -635,7 +722,7 @@ export const MintPhotoScreen = () => {
 
           {snapshot.matches('DeviceConnected.SendingSleepCommand') && (
             <View style={styles.loadingContainer}>
-              <ActivityIndicator size="large" color="#0000ff" />
+              <ActivityIndicator size="large" color={colors.accent} />
               <Text style={styles.loadingText}>Sending SLEEP command...</Text>
               <Text style={styles.loadingSubtext}>Preparing device</Text>
             </View>
@@ -643,14 +730,14 @@ export const MintPhotoScreen = () => {
 
           {snapshot.matches('DeviceConnected.AwaitingSleepResponse') && (
             <View style={styles.loadingContainer}>
-              <ActivityIndicator size="large" color="#0000ff" />
+              <ActivityIndicator size="large" color={colors.accent} />
               <Text style={styles.loadingText}>Waiting for device response...</Text>
             </View>
           )}
 
           {snapshot.matches('DeviceConnected.SendingWakeCommand') && (
             <View style={styles.loadingContainer}>
-              <ActivityIndicator size="large" color="#0000ff" />
+              <ActivityIndicator size="large" color={colors.accent} />
               <Text style={styles.loadingText}>Sending WAKE command...</Text>
               <Text style={styles.loadingSubtext}>Requesting WiFi credentials</Text>
             </View>
@@ -658,14 +745,14 @@ export const MintPhotoScreen = () => {
 
           {snapshot.matches('DeviceConnected.AwaitingWakeResponse') && (
             <View style={styles.loadingContainer}>
-              <ActivityIndicator size="large" color="#0000ff" />
+              <ActivityIndicator size="large" color={colors.accent} />
               <Text style={styles.loadingText}>Receiving WiFi credentials...</Text>
             </View>
           )}
 
           {snapshot.matches('DeviceConnected.Connected') && (
             <View style={styles.loadingContainer}>
-              <ActivityIndicator size="large" color="#0000ff" />
+              <ActivityIndicator size="large" color={colors.accent} />
               <Text style={styles.loadingText}>WiFi credentials received!</Text>
               {snapshot.context.wifiSSID && (
                 <Text style={styles.loadingSubtext}>SSID: {snapshot.context.wifiSSID}</Text>
@@ -675,7 +762,7 @@ export const MintPhotoScreen = () => {
 
           {snapshot.matches('DeviceConnected.ConnectingToWifi') && (
             <View style={styles.loadingContainer}>
-              <ActivityIndicator size="large" color="#0000ff" />
+              <ActivityIndicator size="large" color={colors.accent} />
               <Text style={styles.loadingText}>Connecting to WiFi...</Text>
               <Text style={styles.loadingSubtext}>{snapshot.context.wifiSSID}</Text>
             </View>
@@ -684,7 +771,7 @@ export const MintPhotoScreen = () => {
           {snapshot.matches('DeviceConnected.WifiConnectionFailed') && (
             <View style={styles.errorContainer}>
               <Text style={styles.errorText}>WiFi Connection Failed</Text>
-              <Text>SSID: {snapshot.context.wifiSSID}</Text>
+              <Text style={{ color: colors.text }}>SSID: {snapshot.context.wifiSSID}</Text>
               {snapshot.context.error && (
                 <Text style={styles.errorDetail}>{snapshot.context.error}</Text>
               )}
@@ -694,7 +781,7 @@ export const MintPhotoScreen = () => {
 
           {snapshot.matches('DeviceConnected.WifiConnected') && (
             <View style={styles.loadingContainer}>
-              <ActivityIndicator size="large" color="#0000ff" />
+              <ActivityIndicator size="large" color={colors.accent} />
               <Text style={styles.loadingText}>✓ Connected to WiFi</Text>
               <Text style={styles.loadingSubtext}>{snapshot.context.wifiSSID}</Text>
             </View>
@@ -702,14 +789,14 @@ export const MintPhotoScreen = () => {
 
           {snapshot.matches('DeviceConnected.WaitBeforeListing') && (
             <View style={styles.loadingContainer}>
-              <ActivityIndicator size="large" color="#0000ff" />
+              <ActivityIndicator size="large" color={colors.accent} />
               <Text style={styles.loadingText}>Preparing to list files...</Text>
             </View>
           )}
 
           {snapshot.matches('DeviceConnected.ListingFiles') && (
             <View style={styles.loadingContainer}>
-              <ActivityIndicator size="large" color="#0000ff" />
+              <ActivityIndicator size="large" color={colors.accent} />
               <Text style={styles.loadingText}>Listing files from camera...</Text>
               <Text style={styles.loadingSubtext}>Searching DCIM/100NIKON</Text>
             </View>
@@ -726,7 +813,7 @@ export const MintPhotoScreen = () => {
 
           {snapshot.matches('DeviceConnected.FilesListed') && (
             <View style={styles.loadingContainer}>
-              <ActivityIndicator size="large" color="#0000ff" />
+              <ActivityIndicator size="large" color={colors.accent} />
               <Text style={styles.loadingText}>Files found!</Text>
               <Text style={styles.loadingSubtext}>Preparing to download...</Text>
             </View>
@@ -734,7 +821,7 @@ export const MintPhotoScreen = () => {
 
           {snapshot.matches('DeviceConnected.DownloadingFile') && (
             <View style={styles.loadingContainer}>
-              <ActivityIndicator size="large" color="#0000ff" />
+              <ActivityIndicator size="large" color={colors.accent} />
               <Text style={styles.loadingText}>Downloading photo...</Text>
               {snapshot.context.downloadingFile && (
                 <Text style={styles.loadingSubtext}>{snapshot.context.downloadingFile.name}</Text>
@@ -759,7 +846,7 @@ export const MintPhotoScreen = () => {
             <View style={styles.errorContainer}>
               <Text style={styles.errorText}>Download Failed</Text>
               {snapshot.context.downloadingFile && (
-                <Text>{snapshot.context.downloadingFile.name}</Text>
+                <Text style={{ color: colors.text }}>{snapshot.context.downloadingFile.name}</Text>
               )}
               {snapshot.context.error && (
                 <Text style={styles.errorDetail}>{snapshot.context.error}</Text>
@@ -777,7 +864,7 @@ export const MintPhotoScreen = () => {
                 <Image
                   source={{ uri: snapshot.context.localFileUri }}
                   style={styles.downloadedImage}
-                  resizeMode="contain"
+                  resizeMode="cover"
                 />
               )}
             </View>
@@ -787,87 +874,3 @@ export const MintPhotoScreen = () => {
     </View>
   )
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
-    backgroundColor: '#fff',
-  },
-  loadingContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 20,
-  },
-  loadingText: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    marginTop: 16,
-    textAlign: 'center',
-  },
-  loadingSubtext: {
-    fontSize: 14,
-    color: '#666',
-    marginTop: 8,
-    textAlign: 'center',
-  },
-  errorContainer: {
-    alignItems: 'center',
-    padding: 20,
-    backgroundColor: '#ffebee',
-    borderRadius: 8,
-    margin: 10,
-  },
-  errorText: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#c62828',
-    marginBottom: 8,
-  },
-  errorDetail: {
-    fontSize: 12,
-    color: '#d32f2f',
-    marginTop: 8,
-    textAlign: 'center',
-  },
-  successContainer: {
-    alignItems: 'center',
-    padding: 20,
-  },
-  successText: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#2e7d32',
-    marginBottom: 16,
-    textAlign: 'center',
-  },
-  progressText: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    marginTop: 16,
-    color: '#0000ff',
-  },
-  progressBarContainer: {
-    width: 300,
-    height: 20,
-    backgroundColor: '#e0e0e0',
-    borderRadius: 10,
-    marginTop: 10,
-    overflow: 'hidden',
-  },
-  progressBar: {
-    height: '100%',
-    backgroundColor: '#4CAF50',
-    borderRadius: 10,
-  },
-  downloadedImage: {
-    width: 300,
-    height: 300,
-    marginTop: 20,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#ccc',
-  },
-});
