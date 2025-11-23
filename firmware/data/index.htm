@@ -36,13 +36,13 @@
         </div>
       </div>
 
-      <!-- Debug Info Panel (moved to bottom) -->
-      <div id="debugPanel" class="row mt-3" style="display: none;">
+      <!-- Debug Info Panel (moved to bottom, always visible) -->
+      <div id="debugPanel" class="row mt-3">
         <div class="col-xl-12">
-          <div class="alert alert-warning">
-            <strong>Debug Info:</strong>
+          <div class="alert alert-info">
+            <strong>Debug Log:</strong>
             <button onclick="clearDebugLog()" style="float: right; padding: 2px 8px; font-size: 0.8rem;">Clear</button>
-            <div id="debugInfo" style="font-family: monospace; font-size: 0.75rem; margin-top: 10px; white-space: pre-wrap; max-height: 200px; overflow-y: auto;"></div>
+            <div id="debugInfo" style="font-family: monospace; font-size: 0.75rem; margin-top: 10px; white-space: pre-wrap; max-height: 300px; overflow-y: auto; background: #f8f9fa; padding: 10px; border-radius: 4px;"></div>
           </div>
         </div>
       </div>

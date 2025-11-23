@@ -2,12 +2,20 @@
 #include "sdControl.h"
 #include <SPI.h>
 #include <SD.h>
+#include <SD_MMC.h>
 #include <StreamString.h>
 #include "serial.h"
 #include "network.h"
 #include "config.h"
 #include "bluetooth.h"
 #include "pins.h"
+
+// Define SD object based on mode (must match sdControl.cpp)
+#ifdef USE_SD_MMC
+  #define SD_OBJ SD_MMC
+#else
+  #define SD_OBJ SD
+#endif
 
 // Debug control - set to false for production (eliminates all debug overhead)
 constexpr bool ENABLE_VERBOSE_LOGGING = false;
@@ -275,12 +283,12 @@ bool FSWebServer::handleFileReadSD(String path, AsyncWebServerRequest *request) 
 	String contentType = getContentType(path, request);
 	String pathWithGz = path + ".gz";
 	sdcontrol.takeControl();
-	if (SD.exists(pathWithGz) || SD.exists(path)) {
-		if (SD.exists(pathWithGz)) {
+	if (SD_OBJ.exists(pathWithGz) || SD_OBJ.exists(path)) {
+		if (SD_OBJ.exists(pathWithGz)) {
 			path += ".gz";
 		}
 		DEBUG_LOG("Content type: %s\r\n", contentType.c_str());
-		AsyncWebServerResponse *response = request->beginResponse(SD, path, contentType);
+		AsyncWebServerResponse *response = request->beginResponse(SD_OBJ, path, contentType);
 		if (path.endsWith(".gz"))
 			response->addHeader("Content-Encoding", "gzip");
 		DEBUG_LOG("File %s exist\r\n", path.c_str());
@@ -377,7 +385,7 @@ void FSWebServer::onHttpDownload(AsyncWebServerRequest *request) {
     }
     
     // Open file
-    File file = SD.open(path.c_str());
+    File file = SD_OBJ.open(path.c_str());
     if (!file) {
       if constexpr (ENABLE_VERBOSE_LOGGING) {
         SERIAL_ECHO("ERROR: File not found: ");
@@ -491,7 +499,7 @@ void FSWebServer::onHttpDownload(AsyncWebServerRequest *request) {
         SERIAL_ECHOLN(" bytes");
       }
       
-      AsyncWebServerResponse *response = request->beginResponse(SD, path, contentType);
+      AsyncWebServerResponse *response = request->beginResponse(SD_OBJ, path, contentType);
       response->addHeader("Connection", "close");
       response->addHeader("Access-Control-Allow-Origin", "*");
       response->addHeader("Content-Length", String(fileSize));
@@ -560,43 +568,68 @@ void FSWebServer::onHttpList(AsyncWebServerRequest * request) {
   // Take control - this already handles SD initialization with retries
   sdcontrol.takeControl();
   
-  // Give SD card extra time to be ready after initialization
-  // Low-power devices need more time for card detection
-  delay(1000);
+  // Give SD card time to be ready after initialization
+  delay(300);
   
   DEBUG_LOG("Opening path: '%s'\n", path.c_str());
   
   // Check if SD card is actually mounted - retry if needed for low-power devices
   uint8_t cardType = CARD_NONE;
   int cardCheckAttempts = 0;
-  while (cardCheckAttempts < 5) {
-    cardType = SD.cardType();
+  
+  while (cardCheckAttempts < 3) {
+    cardType = SD_OBJ.cardType();
     if (cardType != CARD_NONE) {
       break;
     }
     DEBUG_LOG("Card type check attempt %d: no card detected, retrying...\n", cardCheckAttempts + 1);
-    delay(500);
+    
+    // On low-power devices, try to wake up the card
+    if (cardCheckAttempts == 1) {
+      DEBUG_LOG("Attempting to wake SD card...\n");
+      File root = SD_OBJ.open("/");
+      if (root) root.close();
+    }
+    
+    delay(200);
     cardCheckAttempts++;
   }
   
+  // If still no card, try reinitialization (for low-power devices)
+  // Note: Reinitialization not supported in SD_MMC mode
+  #ifndef USE_SD_MMC
   if (cardType == CARD_NONE) {
-    DEBUG_LOG("No SD card detected after %d attempts\n", cardCheckAttempts);
+    DEBUG_LOG("Card not detected, attempting reinitialization...\n");
+    SD_OBJ.end();
+    delay(100);
+    if (SD_OBJ.begin(SD_CS_PIN)) {
+      delay(200);
+      cardType = SD_OBJ.cardType();
+      if (cardType != CARD_NONE) {
+        DEBUG_LOG("Card detected after reinitialization\n");
+      }
+    }
+  }
+  #endif
+  
+  if (cardType == CARD_NONE) {
+    DEBUG_LOG("No SD card detected after all attempts\n");
     sdcontrol.relinquishControl();
     request->send(500, "text/plain", "LIST:NO_SD_CARD");
     return;
   }
   
   DEBUG_LOG("SD card type: %d (detected on attempt %d)\n", cardType, cardCheckAttempts + 1);
-  DEBUG_LOG("SD card size: %llu MB\n", SD.cardSize() / (1024 * 1024));
+  DEBUG_LOG("SD card size: %llu MB\n", SD_OBJ.cardSize() / (1024 * 1024));
   
   // Try to open the directory with explicit FILE_READ mode
-  File dir = SD.open(path.c_str(), FILE_READ);
+  File dir = SD_OBJ.open(path.c_str(), FILE_READ);
   
   if (!dir) {
     DEBUG_LOG("Failed to open path: '%s'\n", path.c_str());
     
     // Try without FILE_READ mode
-    dir = SD.open(path.c_str());
+    dir = SD_OBJ.open(path.c_str());
     
     if (!dir) {
       DEBUG_LOG("Failed to open path (second attempt): '%s'\n", path.c_str());
@@ -752,7 +785,7 @@ void FSWebServer::onHttpDelete(AsyncWebServerRequest *request) {
     Serial.println(path);
 
     sdcontrol.takeControl();
-    if (path == "/" || !SD.exists((char *)path.c_str())) {
+    if (path == "/" || !SD_OBJ.exists((char *)path.c_str())) {
       request->send(500, "text/plain", "DELETE:BADPATH");
       Serial.println("path not exists");
     }
@@ -791,11 +824,11 @@ void FSWebServer::onHttpFileUpload(AsyncWebServerRequest *request, String filena
         uploadFile.close();
     }
 
-    if (SD.exists((char *)filename.c_str())) {
-      SD.remove((char *)filename.c_str());
+    if (SD_OBJ.exists((char *)filename.c_str())) {
+      SD_OBJ.remove((char *)filename.c_str());
     }
 
-    uploadFile = SD.open(filename.c_str(), FILE_WRITE);
+    uploadFile = SD_OBJ.open(filename.c_str(), FILE_WRITE);
     if(!uploadFile) {
       request->send(500, "text/plain", "UPLOAD:OPENFAILED");
       sdcontrol.relinquishControl();

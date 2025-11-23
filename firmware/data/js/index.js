@@ -12,8 +12,8 @@ if (navigator.userAgent.indexOf('MSIE') !== -1
 function addDebugLog(message) {
     var timestamp = new Date().toLocaleTimeString();
     debugLogs.push('[' + timestamp + '] ' + message);
-    if (debugLogs.length > 20) {
-        debugLogs.shift(); // Keep only last 20 logs
+    if (debugLogs.length > 30) {
+        debugLogs.shift(); // Keep only last 30 logs
     }
     updateDebugPanel();
 }
@@ -21,10 +21,11 @@ function addDebugLog(message) {
 function updateDebugPanel() {
     var panel = document.getElementById('debugPanel');
     var info = document.getElementById('debugInfo');
-    if (debugLogs.length > 0) {
-        panel.style.display = 'block';
-        info.textContent = debugLogs.join('\n');
-    }
+    // Always show debug panel
+    panel.style.display = 'block';
+    info.textContent = debugLogs.join('\n');
+    // Auto-scroll to bottom
+    info.scrollTop = info.scrollHeight;
 }
 
 function clearDebugLog() {
@@ -47,24 +48,41 @@ function httpGetList(path, offset, limit) {
     offset = offset || 0;
     limit = limit || 20; // Reduced default for slower devices
     
-    addDebugLog('Requesting file list for: ' + path + ' (offset=' + offset + ', limit=' + limit + ')');
+    addDebugLog('=== Starting file list request ===');
+    addDebugLog('Path: ' + path + ', Offset: ' + offset + ', Limit: ' + limit);
+    addDebugLog('Initializing SD card... (this may take 5-10 seconds)');
     
     // Show loading message
-    $("#filelistbox").html("<div style='padding: 20px; text-align: center; color: #666;'>Loading files from SD card...</div>");
+    $("#filelistbox").html("<div style='padding: 20px; text-align: center; color: #666;'><strong>Loading files from SD card...</strong><br><small>Initializing SD card, please wait...</small></div>");
+    
+    var startTime = Date.now();
     
     xmlHttp = new XMLHttpRequest();
-    xmlHttp.timeout = 20000; // 20 second timeout (increased for SD card init)
+    xmlHttp.timeout = 30000; // 30 second timeout (increased for slow SD cards)
     
     xmlHttp.onload = function () {
         sdbusy = false;
     }
     
     xmlHttp.onreadystatechange = function () {
-        if (xmlHttp.readyState == 4) {
+        if (xmlHttp.readyState == 1) {
+            addDebugLog('Connection opened');
+        } else if (xmlHttp.readyState == 2) {
+            addDebugLog('Request sent, waiting for response...');
+        } else if (xmlHttp.readyState == 3) {
+            addDebugLog('Receiving data...');
+        } else if (xmlHttp.readyState == 4) {
+            var elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+            addDebugLog('Request completed in ' + elapsed + ' seconds');
+            
             var resp = xmlHttp.responseText;
-            addDebugLog('List response status: ' + xmlHttp.status);
+            addDebugLog('HTTP Status: ' + xmlHttp.status);
             addDebugLog('Response length: ' + resp.length + ' chars');
-            addDebugLog('Response preview: ' + resp.substring(0, 100));
+            if (resp.length > 0) {
+                addDebugLog('Response preview: ' + resp.substring(0, 100));
+            } else {
+                addDebugLog('Response is empty!');
+            }
 
             if (xmlHttp.status == 200) {
                 if (resp.startsWith('LIST:')) {
@@ -99,14 +117,18 @@ function httpGetList(path, offset, limit) {
     };
     
     xmlHttp.ontimeout = function() {
-        addDebugLog('Request timeout');
-        $("#filelistbox").html("<div style='padding: 20px; text-align: center; color: #ff6b6b;'><strong>Request Timeout</strong><br>The SD card is taking too long to respond. Try:<br>• Refreshing the page<br>• Using a faster SD card<br>• Checking SD card connection</div>");
+        var elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        addDebugLog('❌ REQUEST TIMEOUT after ' + elapsed + ' seconds');
+        addDebugLog('SD card initialization took too long');
+        $("#filelistbox").html("<div style='padding: 20px; text-align: center; color: #ff6b6b;'><strong>Request Timeout</strong><br>The SD card took more than 30 seconds to respond.<br><br>Possible causes:<br>• SD card is very slow<br>• SD card has power issues<br>• SD card is not properly inserted<br><br>Check the debug log below for details.</div>");
         sdbusy = false;
     };
     
     xmlHttp.onerror = function() {
-        addDebugLog('Request error');
-        $("#filelistbox").html("<div style='padding: 20px; text-align: center; color: #ff6b6b;'><strong>Connection Error</strong><br>Cannot connect to device. Check WiFi connection.</div>");
+        var elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        addDebugLog('❌ CONNECTION ERROR after ' + elapsed + ' seconds');
+        addDebugLog('Cannot connect to device');
+        $("#filelistbox").html("<div style='padding: 20px; text-align: center; color: #ff6b6b;'><strong>Connection Error</strong><br>Cannot connect to device.<br><br>Check:<br>• WiFi connection<br>• Device is powered on<br>• Correct IP address<br><br>See debug log below for details.</div>");
         sdbusy = false;
     };
     
