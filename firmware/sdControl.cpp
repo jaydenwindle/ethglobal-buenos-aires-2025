@@ -38,6 +38,7 @@ void SDControl::setup() {
 
 	// NOTE: WE DISABLE THIS FOR DIGICAM
 
+	/*
 	// Wait for other master to assert SD card first
 	for (int i=0; i<SPI_BLOCKOUT_PERIOD; i++)
 	{
@@ -49,6 +50,7 @@ void SDControl::setup() {
 		// 	break;
 		// }
 	}
+	*/
 }
 
 // ------------------------
