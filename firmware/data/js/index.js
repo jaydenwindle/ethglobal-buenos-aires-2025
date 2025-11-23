@@ -625,14 +625,8 @@ function onClickUpdateList() {
 
 function loadImageProgressive(filename, previewDiv) {
     var filePath = filename.startsWith('/') ? filename : '/' + filename;
-    var chunkSize = 16384 * 4; // 16KB chunks - optimal for ESP32
-    var imageElement = null;
-    var currentBlobUrl = null;
-    var chunks = [];
-    var currentChunk = 0;
-    var totalChunks = null;
     
-    addDebugLog('Starting progressive load for: ' + filename);
+    addDebugLog('Starting image load for: ' + filename);
     
     // Create progress container with image placeholder
     var safeId = filename.replace(/[^a-zA-Z0-9]/g, '_');
@@ -643,7 +637,7 @@ function loadImageProgressive(filename, previewDiv) {
         '<div style="background: #ddd; height: 20px; border-radius: 10px; overflow: hidden;">' +
         '<div id="progress-' + safeId + '" style="background: #4CAF50; height: 100%; width: 0%; transition: width 0.3s;"></div>' +
         '</div>' +
-        '<div id="status-' + safeId + '" style="margin-top: 10px; font-size: 0.85rem; color: #666;">Chunk 0...</div>' +
+        '<div id="status-' + safeId + '" style="margin-top: 10px; font-size: 0.85rem; color: #666;">Loading...</div>' +
         '</div>';
     previewDiv.style.display = 'block';
     
@@ -651,121 +645,63 @@ function loadImageProgressive(filename, previewDiv) {
     var progressBar = document.getElementById('progress-' + safeId);
     var statusText = document.getElementById('status-' + safeId);
     
-    function updateImageDisplay() {
-        // Combine chunks loaded so far
-        var totalSize = 0;
-        for (var i = 0; i < chunks.length; i++) {
-            totalSize += chunks[i].length;
+    // Load entire image at once
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', '/cat?path=' + encodeURIComponent(filePath), true);
+    xhr.responseType = 'blob';
+    xhr.timeout = 120000; // 120 second timeout for large files
+    
+    xhr.addEventListener('progress', function(event) {
+        if (event.lengthComputable) {
+            var progress = (event.loaded / event.total * 100);
+            if (progressBar) progressBar.style.width = progress + '%';
+            if (statusText) statusText.textContent = 'Loading... ' + Math.round(progress) + '%';
         }
-        
-        var combined = new Uint8Array(totalSize);
-        var offset = 0;
-        for (var i = 0; i < chunks.length; i++) {
-            combined.set(chunks[i], offset);
-            offset += chunks[i].length;
-        }
-        
-        // Create blob and update image
-        var blob = new Blob([combined], { type: getContentType(filename) });
-        var newBlobUrl = URL.createObjectURL(blob);
-        
-        if (!imageElement) {
-            // Create image element on first chunk
-            imageElement = document.createElement('img');
+    }, false);
+    
+    xhr.onload = function() {
+        if (xhr.status === 200) {
+            var blob = xhr.response;
+            var blobUrl = URL.createObjectURL(blob);
+            
+            // Create and display image
+            var imageElement = document.createElement('img');
             imageElement.style.maxWidth = '100%';
             imageElement.style.maxHeight = '600px';
             imageElement.style.borderRadius = '4px';
             imageElement.style.boxShadow = '0 2px 8px rgba(0,0,0,0.1)';
+            imageElement.src = blobUrl;
+            
             imgContainer.innerHTML = '';
             imgContainer.appendChild(imageElement);
-        }
-        
-        // Revoke old blob URL to free memory
-        if (currentBlobUrl) {
-            URL.revokeObjectURL(currentBlobUrl);
-        }
-        currentBlobUrl = newBlobUrl;
-        
-        // Update image source - browser will progressively render
-        imageElement.src = newBlobUrl;
-    }
-    
-    function loadNextChunk() {
-        var chunkUrl = '/cat?path=' + encodeURIComponent(filePath) + '&chunk=' + currentChunk + '&size=' + chunkSize;
-        addDebugLog('Loading chunk ' + currentChunk);
-        
-        var xhr = new XMLHttpRequest();
-        xhr.open('GET', chunkUrl, true);
-        xhr.responseType = 'arraybuffer';
-        xhr.timeout = 30000;
-        
-        xhr.onload = function() {
-            if (xhr.status === 200 || xhr.status === 206) {
-                var xTotalChunks = xhr.getResponseHeader('X-Total-Chunks');
-                
-                if (xTotalChunks && totalChunks === null) {
-                    totalChunks = parseInt(xTotalChunks);
-                    addDebugLog('Total chunks: ' + totalChunks);
-                }
-                
-                chunks.push(new Uint8Array(xhr.response));
-                
-                // Update progress bar
-                var progress = totalChunks ? ((currentChunk + 1) / totalChunks * 100) : 0;
-                if (progressBar) progressBar.style.width = progress + '%';
-                if (statusText) statusText.textContent = 'Chunk ' + (currentChunk + 1) + (totalChunks ? ' of ' + totalChunks : '') + ' (' + Math.round(progress) + '%)';
-                
-                // Update image display progressively
-                updateImageDisplay();
-                
-                currentChunk++;
-                
-                if (xhr.status === 206 && (!totalChunks || currentChunk < totalChunks)) {
-                    loadNextChunk();
-                } else {
-                    finishDisplay();
-                }
-            } else if (xhr.status === 416) {
-                finishDisplay();
-            } else {
-                addDebugLog('Chunk load error: HTTP ' + xhr.status);
-                previewDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: red; background: #ffe6e6; border-radius: 8px; margin: 10px 0;">' +
-                    '<strong>Failed to load chunk ' + currentChunk + '</strong><br>HTTP ' + xhr.status + '</div>';
+            
+            if (progressBar) progressBar.style.width = '100%';
+            if (statusText) {
+                statusText.textContent = 'Complete! ' + filename + ' (' + blob.size + ' bytes)';
+                statusText.style.color = '#4CAF50';
             }
-        };
-        
-        xhr.onerror = function() {
+            
+            addDebugLog('Image loaded successfully: ' + blob.size + ' bytes');
+        } else {
+            addDebugLog('Image load error: HTTP ' + xhr.status);
             previewDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: red; background: #ffe6e6; border-radius: 8px; margin: 10px 0;">' +
-                '<strong>Network Error</strong><br>Failed to load chunk ' + currentChunk + '</div>';
-        };
-        
-        xhr.ontimeout = function() {
-            previewDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: red; background: #ffe6e6; border-radius: 8px; margin: 10px 0;">' +
-                '<strong>Timeout</strong><br>Chunk ' + currentChunk + ' took too long</div>';
-        };
-        
-        xhr.send();
-    }
-    
-    function finishDisplay() {
-        var totalSize = 0;
-        for (var i = 0; i < chunks.length; i++) {
-            totalSize += chunks[i].length;
+                '<strong>Failed to load image</strong><br>HTTP ' + xhr.status + '</div>';
         }
-        
-        addDebugLog('Loading complete: ' + chunks.length + ' chunks, total: ' + totalSize + ' bytes');
-        
-        // Update status to show completion
-        if (statusText) {
-            statusText.textContent = 'Complete! ' + filename + ' (' + totalSize + ' bytes, ' + chunks.length + ' chunks)';
-            statusText.style.color = '#4CAF50';
-        }
-        
-        // Image is already displayed progressively, just clean up
-        addDebugLog('Image displayed');
-    }
+    };
     
-    loadNextChunk();
+    xhr.onerror = function() {
+        addDebugLog('Image load network error');
+        previewDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: red; background: #ffe6e6; border-radius: 8px; margin: 10px 0;">' +
+            '<strong>Network Error</strong><br>Failed to load image</div>';
+    };
+    
+    xhr.ontimeout = function() {
+        addDebugLog('Image load timeout');
+        previewDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: red; background: #ffe6e6; border-radius: 8px; margin: 10px 0;">' +
+            '<strong>Timeout</strong><br>Image took too long to load</div>';
+    };
+    
+    xhr.send();
 }
 
 function onClickShowImage(filename, buttonElement) {
