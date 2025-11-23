@@ -1,4 +1,4 @@
-import { View, Text, Button, Image, StyleSheet } from "react-native"
+import { View, Text, Button, Image, StyleSheet, ActivityIndicator } from "react-native"
 import { useEffect } from "react"
 
 import { createMachine, fromPromise, fromCallback, assign } from 'xstate';
@@ -25,10 +25,12 @@ type MintPhotoContext = {
 
 type MintPhotoEvents =
   | { type: 'retry' }
-  | { type: 'disconnect' }
+  | { type: 'start' }
   | { type: 'dataReceived'; data: string }
   | { type: 'retryWifi' }
-  | { type: 'downloadProgress'; progress: number };
+  | { type: 'downloadProgress'; progress: number }
+  | { type: 'downloadComplete'; localUri: string }
+  | { type: 'downloadError'; error: string };
 
 const DEVICE_NAME = "digicam-001";
 const SERVICE_UUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E";
@@ -210,29 +212,43 @@ const listFiles = fromPromise<FileEntry[], void>(async () => {
   throw new Error('Unexpected error in listFiles');
 });
 
-// Promise actor to download a file from camera
-const downloadFile = fromPromise<string, { file: FileEntry }>(async ({ input }) => {
+// Callback actor to download a file from camera with progress tracking
+const downloadFile = fromCallback<
+  { type: 'downloadProgress'; progress: number } | { type: 'downloadComplete'; localUri: string } | { type: 'downloadError'; error: string },
+  { file: FileEntry }
+>(({ sendBack, input }) => {
   console.log(`Downloading file: ${input.file.name}`);
 
   const api = new SDCardAPI('192.168.4.1');
 
-  try {
-    const localUri = await api.downloadFileToLocal(
-      input.file.path,
-      input.file.size,
-      (progress, totalBytes, downloadedBytes) => {
-        console.log(`Download progress: ${Math.round(progress * 100)}% (${downloadedBytes}/${totalBytes} bytes)`);
-      }
-    );
+  // Start the download
+  (async () => {
+    try {
+      const localUri = await api.downloadFileToLocal(
+        input.file.path,
+        input.file.size,
+        (progress, totalBytes, downloadedBytes) => {
+          console.log(`Download progress: ${Math.round(progress * 100)}% (${downloadedBytes}/${totalBytes} bytes)`);
+          // Send progress update to the machine
+          sendBack({ type: 'downloadProgress', progress });
+        },
+        8192 // 8KB chunks
+      );
 
-    console.log(`File downloaded to: ${localUri}`);
-    return localUri;
+      console.log(`File downloaded to: ${localUri}`);
+      sendBack({ type: 'downloadComplete', localUri });
 
-  } catch (error: any) {
-    const errorMessage = error?.message || error?.toString() || 'Unknown error';
-    console.log(`Download failed: ${errorMessage}`);
-    throw new Error(`Download failed: ${errorMessage}`);
-  }
+    } catch (error: any) {
+      const errorMessage = error?.message || error?.toString() || 'Unknown error';
+      console.log(`Download failed: ${errorMessage}`);
+      sendBack({ type: 'downloadError', error: errorMessage });
+    }
+  })();
+
+  // Cleanup function (not much to clean up for this actor)
+  return () => {
+    console.log('Download actor cleanup');
+  };
 });
 
 // Callback actor to monitor notifications from the device
@@ -334,8 +350,13 @@ const bluetoothMachine = createMachine({
           device: context.connectedDevice!,
         }),
       },
-      initial: 'SendingSleepCommand',
+      initial: 'WaitingForUserInput',
       states: {
+        WaitingForUserInput: {
+          on: {
+            start: 'SendingSleepCommand',
+          },
+        },
         SendingSleepCommand: {
           invoke: {
             src: sendCommand,
@@ -517,17 +538,25 @@ const bluetoothMachine = createMachine({
             input: ({ context }) => ({
               file: context.downloadingFile!,
             }),
-            onDone: {
+          },
+          on: {
+            downloadProgress: {
+              actions: assign({
+                downloadProgress: ({ event }) => event.progress,
+              }),
+            },
+            downloadComplete: {
               target: 'FileDownloaded',
               actions: assign({
                 error: undefined,
-                localFileUri: ({ event }) => event.output,
+                localFileUri: ({ event }) => event.localUri,
+                downloadProgress: 1,
               }),
             },
-            onError: {
+            downloadError: {
               target: 'DownloadFailed',
               actions: assign({
-                error: ({ event }) => event.error instanceof Error ? event.error.message : 'Unknown error',
+                error: ({ event }) => event.error,
               }),
             },
           },
@@ -537,17 +566,6 @@ const bluetoothMachine = createMachine({
         },
         FileDownloaded: {
           // Final state - file is downloaded
-        },
-      },
-      on: {
-        disconnect: {
-          target: 'CheckingBluetooth',
-          actions: assign({
-            receivedData: undefined,
-            connectedDevice: undefined,
-            wifiSSID: undefined,
-            wifiPassword: undefined,
-          }),
         },
       },
     },
@@ -568,177 +586,202 @@ export const MintPhotoScreen = () => {
   }, []);
 
   return (
-    <View>
-      <Text>State: {JSON.stringify(snapshot.value)}</Text>
-
+    <View style={styles.container}>
       {snapshot.value === 'CheckingBluetooth' && (
-        <Text>Checking if bluetooth is ready...</Text>
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color="#0000ff" />
+          <Text style={styles.loadingText}>Checking Bluetooth...</Text>
+        </View>
       )}
 
       {snapshot.value === 'BluetoothNotReady' && (
-        <>
-          <Text>Bluetooth is not ready. Please enable bluetooth.</Text>
+        <View style={styles.errorContainer}>
+          <Text style={styles.errorText}>Bluetooth is not ready</Text>
+          <Text>Please enable bluetooth.</Text>
           {snapshot.context.error && (
-            <Text>Error: {snapshot.context.error}</Text>
+            <Text style={styles.errorDetail}>{snapshot.context.error}</Text>
           )}
           <Button onPress={() => send({ type: 'retry' })} title="Retry" />
-        </>
+        </View>
       )}
 
       {snapshot.value === 'ScanningAndConnecting' && (
-        <Text>Scanning for {DEVICE_NAME} and connecting...</Text>
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color="#0000ff" />
+          <Text style={styles.loadingText}>Scanning for {DEVICE_NAME}...</Text>
+          <Text style={styles.loadingSubtext}>Connecting to device</Text>
+        </View>
       )}
 
       {snapshot.value === 'ConnectionFailed' && (
-        <>
+        <View style={styles.errorContainer}>
+          <Text style={styles.errorText}>Connection Failed</Text>
           <Text>Failed to connect to {DEVICE_NAME}</Text>
           {snapshot.context.error && (
-            <Text>Error: {snapshot.context.error}</Text>
+            <Text style={styles.errorDetail}>{snapshot.context.error}</Text>
           )}
           <Button onPress={() => send({ type: 'retry' })} title="Retry Connection" />
-        </>
+        </View>
       )}
 
       {snapshot.matches('DeviceConnected') && (
         <>
-          <Text>Connected to {snapshot.context.deviceName}!</Text>
-          <Text>Device ID: {snapshot.context.deviceId}</Text>
+          {snapshot.matches('DeviceConnected.WaitingForUserInput') && (
+            <View style={styles.successContainer}>
+              <Text style={styles.successText}>✓ Connected to {snapshot.context.deviceName}!</Text>
+              <Button onPress={() => send({ type: 'start' })} title="Start Photo Transfer" />
+            </View>
+          )}
 
           {snapshot.matches('DeviceConnected.SendingSleepCommand') && (
-            <Text>Sending SLEEP command...</Text>
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#0000ff" />
+              <Text style={styles.loadingText}>Sending SLEEP command...</Text>
+              <Text style={styles.loadingSubtext}>Preparing device</Text>
+            </View>
           )}
 
           {snapshot.matches('DeviceConnected.AwaitingSleepResponse') && (
-            <Text>Waiting for SLEEP response...</Text>
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#0000ff" />
+              <Text style={styles.loadingText}>Waiting for device response...</Text>
+            </View>
           )}
 
           {snapshot.matches('DeviceConnected.SendingWakeCommand') && (
-            <Text>Sending WAKE command...</Text>
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#0000ff" />
+              <Text style={styles.loadingText}>Sending WAKE command...</Text>
+              <Text style={styles.loadingSubtext}>Requesting WiFi credentials</Text>
+            </View>
           )}
 
           {snapshot.matches('DeviceConnected.AwaitingWakeResponse') && (
-            <Text>Waiting for WAKE response...</Text>
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#0000ff" />
+              <Text style={styles.loadingText}>Receiving WiFi credentials...</Text>
+            </View>
           )}
 
           {snapshot.matches('DeviceConnected.Connected') && (
-            <>
-              <Text>WiFi credentials received!</Text>
-              {snapshot.context.wifiSSID && snapshot.context.wifiPassword && (
-                <>
-                  <Text>SSID: {snapshot.context.wifiSSID}</Text>
-                  <Text>Password: {snapshot.context.wifiPassword}</Text>
-                </>
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#0000ff" />
+              <Text style={styles.loadingText}>WiFi credentials received!</Text>
+              {snapshot.context.wifiSSID && (
+                <Text style={styles.loadingSubtext}>SSID: {snapshot.context.wifiSSID}</Text>
               )}
-            </>
+            </View>
           )}
 
           {snapshot.matches('DeviceConnected.ConnectingToWifi') && (
-            <>
-              <Text>Connecting to WiFi network...</Text>
-              <Text>SSID: {snapshot.context.wifiSSID}</Text>
-            </>
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#0000ff" />
+              <Text style={styles.loadingText}>Connecting to WiFi...</Text>
+              <Text style={styles.loadingSubtext}>{snapshot.context.wifiSSID}</Text>
+            </View>
           )}
 
           {snapshot.matches('DeviceConnected.WifiConnectionFailed') && (
-            <>
-              <Text>WiFi connection failed!</Text>
+            <View style={styles.errorContainer}>
+              <Text style={styles.errorText}>WiFi Connection Failed</Text>
               <Text>SSID: {snapshot.context.wifiSSID}</Text>
               {snapshot.context.error && (
-                <Text>Error: {snapshot.context.error}</Text>
+                <Text style={styles.errorDetail}>{snapshot.context.error}</Text>
               )}
               <Button onPress={() => send({ type: 'retryWifi' })} title="Retry WiFi Connection" />
-            </>
+            </View>
           )}
 
           {snapshot.matches('DeviceConnected.WifiConnected') && (
-            <>
-              <Text>Successfully connected to WiFi!</Text>
-              <Text>Network: {snapshot.context.wifiSSID}</Text>
-            </>
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#0000ff" />
+              <Text style={styles.loadingText}>✓ Connected to WiFi</Text>
+              <Text style={styles.loadingSubtext}>{snapshot.context.wifiSSID}</Text>
+            </View>
           )}
 
           {snapshot.matches('DeviceConnected.WaitBeforeListing') && (
-            <Text>Preparing to list files...</Text>
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#0000ff" />
+              <Text style={styles.loadingText}>Preparing to list files...</Text>
+            </View>
           )}
 
           {snapshot.matches('DeviceConnected.ListingFiles') && (
-            <Text>Listing files from camera (will retry up to 3 times)...</Text>
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#0000ff" />
+              <Text style={styles.loadingText}>Listing files from camera...</Text>
+              <Text style={styles.loadingSubtext}>Searching DCIM/100NIKON</Text>
+            </View>
           )}
 
           {snapshot.matches('DeviceConnected.FileListingFailed') && (
-            <>
-              <Text>Failed to list files from camera</Text>
+            <View style={styles.errorContainer}>
+              <Text style={styles.errorText}>File Listing Failed</Text>
               {snapshot.context.error && (
-                <Text>Error: {snapshot.context.error}</Text>
+                <Text style={styles.errorDetail}>{snapshot.context.error}</Text>
               )}
-            </>
+            </View>
           )}
 
           {snapshot.matches('DeviceConnected.FilesListed') && (
-            <>
-              <Text>Files in DCIM/100NIKON:</Text>
-              {snapshot.context.files && snapshot.context.files.length > 0 ? (
-                snapshot.context.files.map((file, index) => (
-                  <Text key={index}>
-                    {file.type === 'dir' ? '📁' : '📄'} {file.name} ({file.size} bytes)
-                  </Text>
-                ))
-              ) : (
-                <Text>No files found</Text>
-              )}
-            </>
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#0000ff" />
+              <Text style={styles.loadingText}>Files found!</Text>
+              <Text style={styles.loadingSubtext}>Preparing to download...</Text>
+            </View>
           )}
 
           {snapshot.matches('DeviceConnected.DownloadingFile') && (
-            <>
-              <Text>Downloading file...</Text>
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#0000ff" />
+              <Text style={styles.loadingText}>Downloading photo...</Text>
               {snapshot.context.downloadingFile && (
+                <Text style={styles.loadingSubtext}>{snapshot.context.downloadingFile.name}</Text>
+              )}
+              {snapshot.context.downloadProgress !== undefined && (
                 <>
-                  <Text>File: {snapshot.context.downloadingFile.name}</Text>
-                  <Text>Size: {snapshot.context.downloadingFile.size} bytes</Text>
+                  <Text style={styles.progressText}>{Math.round(snapshot.context.downloadProgress * 100)}%</Text>
+                  <View style={styles.progressBarContainer}>
+                    <View
+                      style={[
+                        styles.progressBar,
+                        { width: `${snapshot.context.downloadProgress * 100}%` }
+                      ]}
+                    />
+                  </View>
                 </>
               )}
-            </>
+            </View>
           )}
 
           {snapshot.matches('DeviceConnected.DownloadFailed') && (
-            <>
-              <Text>Download failed!</Text>
+            <View style={styles.errorContainer}>
+              <Text style={styles.errorText}>Download Failed</Text>
               {snapshot.context.downloadingFile && (
-                <Text>File: {snapshot.context.downloadingFile.name}</Text>
+                <Text>{snapshot.context.downloadingFile.name}</Text>
               )}
               {snapshot.context.error && (
-                <Text>Error: {snapshot.context.error}</Text>
+                <Text style={styles.errorDetail}>{snapshot.context.error}</Text>
               )}
-            </>
+            </View>
           )}
 
           {snapshot.matches('DeviceConnected.FileDownloaded') && (
-            <>
-              <Text>File downloaded successfully!</Text>
+            <View style={styles.successContainer}>
+              <Text style={styles.successText}>✓ Photo Downloaded!</Text>
               {snapshot.context.downloadingFile && (
-                <Text>File: {snapshot.context.downloadingFile.name}</Text>
+                <Text style={styles.loadingSubtext}>{snapshot.context.downloadingFile.name}</Text>
               )}
               {snapshot.context.localFileUri && (
-                <>
-                  <Text>Saved to: {snapshot.context.localFileUri}</Text>
-                  <Image
-                    source={{ uri: snapshot.context.localFileUri }}
-                    style={styles.downloadedImage}
-                    resizeMode="contain"
-                  />
-                </>
+                <Image
+                  source={{ uri: snapshot.context.localFileUri }}
+                  style={styles.downloadedImage}
+                  resizeMode="contain"
+                />
               )}
-            </>
+            </View>
           )}
-
-          {snapshot.context.receivedData && (
-            <>
-              <Text>Received Data:</Text>
-              <Text>{snapshot.context.receivedData}</Text>
-            </>
-          )}
-          <Button onPress={() => send({ type: 'disconnect' })} title="Disconnect" />
         </>
       )}
     </View>
@@ -746,10 +789,83 @@ export const MintPhotoScreen = () => {
 }
 
 const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+    backgroundColor: '#fff',
+  },
+  loadingContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  loadingText: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    marginTop: 16,
+    textAlign: 'center',
+  },
+  loadingSubtext: {
+    fontSize: 14,
+    color: '#666',
+    marginTop: 8,
+    textAlign: 'center',
+  },
+  errorContainer: {
+    alignItems: 'center',
+    padding: 20,
+    backgroundColor: '#ffebee',
+    borderRadius: 8,
+    margin: 10,
+  },
+  errorText: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#c62828',
+    marginBottom: 8,
+  },
+  errorDetail: {
+    fontSize: 12,
+    color: '#d32f2f',
+    marginTop: 8,
+    textAlign: 'center',
+  },
+  successContainer: {
+    alignItems: 'center',
+    padding: 20,
+  },
+  successText: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#2e7d32',
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  progressText: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    marginTop: 16,
+    color: '#0000ff',
+  },
+  progressBarContainer: {
+    width: 300,
+    height: 20,
+    backgroundColor: '#e0e0e0',
+    borderRadius: 10,
+    marginTop: 10,
+    overflow: 'hidden',
+  },
+  progressBar: {
+    height: '100%',
+    backgroundColor: '#4CAF50',
+    borderRadius: 10,
+  },
   downloadedImage: {
     width: 300,
     height: 300,
-    marginTop: 10,
+    marginTop: 20,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: '#ccc',
