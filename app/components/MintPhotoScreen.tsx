@@ -8,6 +8,10 @@ import { Buffer } from "buffer";
 import WifiManager from "react-native-wifi-reborn";
 import { SDCardAPI, FileEntry } from "../services/sdcard";
 import { useTheme } from "../theme/ThemeContext";
+import { createMetadataBuilder, createZoraUploaderForCreator, setApiKey } from "@zoralabs/coins-sdk";
+import { Address } from "viem";
+import { PinataSDK } from "pinata";
+import * as FileSystem from 'expo-file-system';
 
 // Types for the state machine
 type MintPhotoContext = {
@@ -22,6 +26,10 @@ type MintPhotoContext = {
   downloadingFile?: FileEntry;
   downloadProgress?: number;
   localFileUri?: string;
+  base64Data?: string;
+  imageIpfsUri?: string;
+  metadataIpfsUri?: string;
+  creatorAddress?: string;
 };
 
 type MintPhotoEvents =
@@ -30,16 +38,27 @@ type MintPhotoEvents =
   | { type: 'dataReceived'; data: string }
   | { type: 'retryWifi' }
   | { type: 'downloadProgress'; progress: number }
-  | { type: 'downloadComplete'; localUri: string }
-  | { type: 'downloadError'; error: string };
+  | { type: 'downloadComplete'; localUri: string; base64Data: string }
+  | { type: 'downloadError'; error: string }
+  | { type: 'generateMetadata' };
 
 const DEVICE_NAME = "digicam-001";
 const SERVICE_UUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E";
 const RX_CHARACTERISTIC_UUID = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E";
 const TX_CHARACTERISTIC_UUID = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E";
+// TODO: Replace with actual creator address from wallet/user
+const CREATOR_ADDRESS = "0x17cd072cBd45031EFc21Da538c783E0ed3b25DCc";
 
 // Persistent BLE Manager instance
 const bleManager = new BleManager();
+
+// Initialize Pinata SDK
+const pinata = new PinataSDK({
+  pinataJwt: process.env.EXPO_PUBLIC_PINATA_JWT!,
+  pinataGateway: process.env.EXPO_PUBLIC_PINATA_GATEWAY,
+});
+
+setApiKey(process.env.EXPO_PUBLIC_ZORA_API_KEY)
 
 // Helper function to parse WiFi credentials from received data
 const parseWifiCredentials = (data: string): { ssid: string; password: string } | null => {
@@ -215,7 +234,7 @@ const listFiles = fromPromise<FileEntry[], void>(async () => {
 
 // Callback actor to download a file from camera with progress tracking
 const downloadFile = fromCallback<
-  { type: 'downloadProgress'; progress: number } | { type: 'downloadComplete'; localUri: string } | { type: 'downloadError'; error: string },
+  { type: 'downloadProgress'; progress: number } | { type: 'downloadComplete'; localUri: string; base64Data: string } | { type: 'downloadError'; error: string },
   { file: FileEntry }
 >(({ sendBack, input }) => {
   console.log(`Downloading file: ${input.file.name}`);
@@ -225,7 +244,7 @@ const downloadFile = fromCallback<
   // Start the download
   (async () => {
     try {
-      const localUri = await api.downloadFileToLocal(
+      const { localUri, base64Data } = await api.downloadFileToLocal(
         input.file.path,
         input.file.size,
         (progress, totalBytes, downloadedBytes) => {
@@ -237,7 +256,7 @@ const downloadFile = fromCallback<
       );
 
       console.log(`File downloaded to: ${localUri}`);
-      sendBack({ type: 'downloadComplete', localUri });
+      sendBack({ type: 'downloadComplete', localUri, base64Data });
 
     } catch (error: any) {
       const errorMessage = error?.message || error?.toString() || 'Unknown error';
@@ -250,6 +269,36 @@ const downloadFile = fromCallback<
   return () => {
     console.log('Download actor cleanup');
   };
+});
+
+// Promise actor to upload image to Pinata
+const uploadImageToPinata = fromPromise<string, { base64Data: string; fileName: string }>(async ({ input }) => {
+  console.log(`Uploading image to Pinata: ${input.fileName}`);
+
+  try {
+    console.log(`Using cached base64 data, size: ${input.base64Data.length} chars`);
+
+    // Create a File from base64 data URI
+    const dataUri = `data:image/jpeg;base64,${input.base64Data}`;
+    const response = await fetch(dataUri);
+    const blob = await response.blob();
+    const file = new File([blob], input.fileName, { type: 'image/jpeg' });
+
+    console.log(`File created, size: ${file.size} bytes`);
+
+    // Upload to Pinata
+    console.log('Uploading to Pinata...');
+    const upload = await pinata.upload.file(file);
+    const ipfsUri = `ipfs://${upload.cid}`;
+
+    console.log(`Image uploaded to IPFS: ${ipfsUri}`);
+    return ipfsUri;
+
+  } catch (error: any) {
+    const errorMessage = error?.message || error?.toString() || 'Unknown error';
+    console.log(`Image upload failed: ${errorMessage}`);
+    throw new Error(`Failed to upload image: ${errorMessage}`);
+  }
 });
 
 // Callback actor to monitor notifications from the device
@@ -551,6 +600,7 @@ const bluetoothMachine = createMachine({
               actions: assign({
                 error: undefined,
                 localFileUri: ({ event }) => event.localUri,
+                base64Data: ({ event }) => event.base64Data,
                 downloadProgress: 1,
               }),
             },
@@ -566,7 +616,39 @@ const bluetoothMachine = createMachine({
           // Could add retry logic here
         },
         FileDownloaded: {
-          // Final state - file is downloaded
+          on: {
+            generateMetadata: {
+              target: 'UploadingImage',
+            },
+          },
+        },
+        UploadingImage: {
+          invoke: {
+            src: uploadImageToPinata,
+            input: ({ context }) => ({
+              base64Data: context.base64Data!,
+              fileName: context.downloadingFile?.name || 'photo.jpg',
+            }),
+            onDone: {
+              target: 'ImageUploaded',
+              actions: assign({
+                error: undefined,
+                imageIpfsUri: ({ event }) => event.output,
+              }),
+            },
+            onError: {
+              target: 'ImageUploadFailed',
+              actions: assign({
+                error: ({ event }) => event.error instanceof Error ? event.error.message : 'Unknown error',
+              }),
+            },
+          },
+        },
+        ImageUploadFailed: {
+          // Could add retry logic here
+        },
+        ImageUploaded: {
+          // Final state - image is uploaded to IPFS
         },
       },
     },
@@ -859,6 +941,65 @@ export const MintPhotoScreen = () => {
               <Text style={styles.successText}>✓ Photo Downloaded!</Text>
               {snapshot.context.downloadingFile && (
                 <Text style={styles.loadingSubtext}>{snapshot.context.downloadingFile.name}</Text>
+              )}
+              {snapshot.context.localFileUri && (
+                <Image
+                  source={{ uri: snapshot.context.localFileUri }}
+                  style={styles.downloadedImage}
+                  resizeMode="cover"
+                />
+              )}
+              <Button
+                onPress={() => send({ type: 'generateMetadata' })}
+                title="Upload Image to IPFS"
+              />
+            </View>
+          )}
+
+          {snapshot.matches('DeviceConnected.UploadingImage') && (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color={colors.accent} />
+              <Text style={styles.loadingText}>Uploading image to IPFS...</Text>
+              {snapshot.context.downloadingFile && (
+                <Text style={styles.loadingSubtext}>{snapshot.context.downloadingFile.name}</Text>
+              )}
+              {snapshot.context.localFileUri && (
+                <Image
+                  source={{ uri: snapshot.context.localFileUri }}
+                  style={styles.downloadedImage}
+                  resizeMode="cover"
+                />
+              )}
+            </View>
+          )}
+
+          {snapshot.matches('DeviceConnected.ImageUploadFailed') && (
+            <View style={styles.errorContainer}>
+              <Text style={styles.errorText}>Image Upload Failed</Text>
+              {snapshot.context.downloadingFile && (
+                <Text style={{ color: colors.text }}>{snapshot.context.downloadingFile.name}</Text>
+              )}
+              {snapshot.context.error && (
+                <Text style={styles.errorDetail}>{snapshot.context.error}</Text>
+              )}
+              {snapshot.context.localFileUri && (
+                <Image
+                  source={{ uri: snapshot.context.localFileUri }}
+                  style={styles.downloadedImage}
+                  resizeMode="cover"
+                />
+              )}
+            </View>
+          )}
+
+          {snapshot.matches('DeviceConnected.ImageUploaded') && (
+            <View style={styles.successContainer}>
+              <Text style={styles.successText}>✓ Image Uploaded to IPFS!</Text>
+              {snapshot.context.downloadingFile && (
+                <Text style={styles.loadingSubtext}>{snapshot.context.downloadingFile.name}</Text>
+              )}
+              {snapshot.context.imageIpfsUri && (
+                <Text style={styles.loadingSubtext}>IPFS URI: {snapshot.context.imageIpfsUri}</Text>
               )}
               {snapshot.context.localFileUri && (
                 <Image
