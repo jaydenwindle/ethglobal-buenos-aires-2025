@@ -5,6 +5,7 @@
 #include "sdControl.h"
 #include "pins.h"
 #include "serial.h"
+#include "sdlog.h"
 
 // Define SD object based on mode
 #ifdef USE_SD_MMC
@@ -118,6 +119,7 @@ void SDControl::takeControl()	{
 			sdInitialized = true;
 			SERIAL_ECHOLN(" SUCCESS");
 			DEBUG_LOG("SD card initialized on attempt %d\n", cnt + 1);
+			SD_LOG("SD card initialized successfully on attempt %d\n", cnt + 1);
 			break;
 		}
 		
@@ -143,6 +145,7 @@ void SDControl::takeControl()	{
 		  SERIAL_ECHOLN("  - SD_MMC pins are correctly connected (CMD=15, CLK=14, D0=2)");
 		#endif
 		DEBUG_LOG("SD card initialization failed after 5 attempts\n");
+		SD_LOGLN("ERROR: SD card initialization failed after 5 attempts");
 	}
   
 	DEBUG_LOG("takeControl\n");

@@ -2,6 +2,7 @@
 #include "sdControl.h"
 #include "config.h"
 #include "serial.h"
+#include "sdlog.h"
 #include "network.h"
 #include "FSWebServer.h"
 #include "bluetooth.h"
@@ -19,27 +20,34 @@ bool pendingCredentialsSend = false;
 
 void setup() {
   SERIAL_INIT(115200);
+  SD_LOGLN("=== DEVICE BOOT ===");
   
   // Load config first to get BT name
   SPIFFS.begin();
   config.load(&SPIFFS);
+  SD_LOGLN("Config loaded from SPIFFS");
   
   // Initialize Bluetooth with configured name
   BT.begin(config.btSSID());
+  SD_LOG("Bluetooth initialized: %s\n", config.btSSID());
   
   if (WIFI_ENABLED_ON_START) {    
     SERIAL_ECHOLN("WiFi enabled on startup (WIFI_ENABLED_ON_START=true)");
+    SD_LOGLN("WiFi enabled on startup");
     sdcontrol.setup();
+    sdLogger.init();  // Initialize SD logging after SD card is ready
     network.start();
     server.begin(&SPIFFS);
     wifiEnabled = true;
     serverStarted = true;
+    SD_LOGLN("Server started");
   }
 
   else {
 
   SERIAL_ECHOLN("WiFi disabled on startup");
   SERIAL_ECHOLN("Use Bluetooth commands to enable WiFi");
+  SD_LOGLN("WiFi disabled on startup - waiting for BT commands");
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
   wifiEnabled = false;
@@ -50,17 +58,20 @@ void setup() {
   
   lastActivityTime = millis();
   DEBUG_LOG("Setup complete\n");
+  SD_LOGLN("Setup complete");
 }
 
 void enterSleepMode() {
   if (sleepMode) return;
   
   SERIAL_ECHOLN("Entering light sleep mode...");
+  SD_LOGLN("Entering light sleep mode");
   
   // Disable WiFi to save power
   if (wifiEnabled) {
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
+    SD_LOGLN("WiFi disabled for sleep");
   }
   
   // Configure light sleep (Bluetooth stays active)
@@ -73,12 +84,14 @@ void enterSleepMode() {
   sleepMode = true;
   BT.write("zzz\n");
   SERIAL_ECHOLN("Sleep mode active. Bluetooth remains active for wake command.");
+  SD_LOGLN("Sleep mode active");
 }
 
 void exitSleepMode() {
   if (!sleepMode) return;
   
   SERIAL_ECHOLN("Waking from sleep mode...");
+  SD_LOGLN("Waking from sleep mode");
   
   // Restore normal power mode
   esp_pm_config_esp32_t pm_config;
@@ -93,9 +106,11 @@ void exitSleepMode() {
   // Start WiFi and server if not already started
   if (!wifiEnabled || WiFi.getMode() == WIFI_OFF) {
     SERIAL_ECHOLN("Starting WiFi in AP mode...");
+    SD_LOGLN("Starting WiFi in AP mode");
     if (!serverStarted) {
       SPIFFS.begin();
       sdcontrol.setup();
+      sdLogger.init();  // Initialize SD logging after SD card is ready
       serverStarted = true;
     }
     network.startSoftAP();  // Start in AP mode
@@ -105,17 +120,21 @@ void exitSleepMode() {
     // Flag to send credentials after AP is confirmed running in main loop
     pendingCredentialsSend = true;
     SERIAL_ECHOLN("WiFi AP starting...");
+    SD_LOGLN("WiFi AP starting");
   } else {
     // WiFi already running, send credentials immediately
     sendAPCredentials();
   }
   
   SERIAL_ECHOLN("Device awake.");
+  SD_LOGLN("Device awake");
 }
 
 void handleBluetoothCommand(String cmd) {
   cmd.trim();
   cmd.toUpperCase();
+  
+  SD_LOG("BT Command received: %s\n", cmd.c_str());
   
   lastActivityTime = millis(); // Reset activity timer
   
@@ -146,6 +165,8 @@ void handleBluetoothCommand(String cmd) {
     BT.write("  WIFI SCAN - Scan for networks\n");
     BT.write("  WIFI CONNECT <ssid> <password> - Connect to WiFi\n");
     BT.write("  WIFI AP - Start Access Point mode\n");
+    BT.write("  LOG STATUS - Check if SD logging is enabled\n");
+    BT.write("  LOG CLEAR - Clear the log file\n");
     BT.write("  RESTART - Restart device\n");
   }
   else if (cmd == "SLEEP") {
@@ -291,8 +312,27 @@ void handleBluetoothCommand(String cmd) {
     network.startSoftAP();
     BT.write("AP mode started\n");
   }
+  else if (cmd == "LOG STATUS") {
+    if (sdLogger.isEnabled()) {
+      BT.write("SD logging is ENABLED\n");
+      BT.write("Log file: /log.txt on SD card\n");
+      BT.write("You can read this file to troubleshoot issues\n");
+    } else {
+      BT.write("SD logging is DISABLED\n");
+      BT.write("SD card may not be available\n");
+    }
+  }
+  else if (cmd == "LOG CLEAR") {
+    if (sdLogger.isEnabled()) {
+      sdLogger.clear();
+      BT.write("Log file cleared\n");
+    } else {
+      BT.write("SD logging is not enabled\n");
+    }
+  }
   else if (cmd == "RESTART") {
     BT.write("Restarting device...\n");
+    SD_LOGLN("Device restart requested via BT");
     delay(1000);
     ESP.restart();
   }
@@ -300,6 +340,7 @@ void handleBluetoothCommand(String cmd) {
     BT.write("Unknown command: ");
     BT.write(cmd.c_str());
     BT.write("\nType HELP for available commands\n");
+    SD_LOG("Unknown BT command: %s\n", cmd.c_str());
   }
 }
 

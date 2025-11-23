@@ -56,3 +56,40 @@ AsyncTCP: https://github.com/dvarrel/AsyncTCP
 ESPAsyncWebServer: https://github.com/me-no-dev/ESPAsyncWebServer
 
     
+
+
+## SD Card Logging Feature
+
+### Overview
+The firmware includes automatic logging to the SD card for troubleshooting, especially useful when serial connection is lost during Bluetooth testing.
+
+### Features
+- All important events logged to `/log.txt` on SD card
+- Timestamps for each event (milliseconds since boot)
+- Automatic log rotation when file reaches 100KB
+- Bluetooth commands to check and clear logs
+
+### Bluetooth Commands
+```
+LOG STATUS    - Check if SD logging is enabled
+LOG CLEAR     - Clear the log file and start fresh
+```
+
+### Reading Logs
+1. **Via Web Interface**: Connect to device WiFi and download `/log.txt`
+2. **Direct Access**: Power off device, remove SD card, read file on computer
+3. **Bluetooth**: Use `LOG STATUS` to verify logging is working
+
+### Documentation
+- [SD Logging Guide](docs/SD_LOGGING.md) - Complete documentation
+- [Quick Start](docs/LOGGING_QUICK_START.md) - Fast setup and usage
+
+### What Gets Logged
+- Device boot and initialization
+- Bluetooth commands
+- WiFi operations (AP start, connections, failures)
+- SD card initialization
+- Sleep/wake cycles
+- Errors and warnings
+
+This feature is particularly useful when testing with `esp32_terminal.py` where the serial connection may disconnect.

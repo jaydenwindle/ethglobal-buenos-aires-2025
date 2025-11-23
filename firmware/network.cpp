@@ -10,6 +10,7 @@
 #include "config.h"
 #include "pins.h"
 #include "sdControl.h"
+#include "sdlog.h"
 #include <DNSServer.h>
 #include <SPIFFS.h>
 
@@ -65,6 +66,7 @@ int Network::startConnect(String ssid, String psd) {
 int Network::connect(String ssid, String psd) {
   if(_wifiMode == _stamode && WiFi.status() == WL_CONNECTED && WiFi.SSID().equals(ssid.c_str())) {
     SERIAL_ECHOLN("Aready connected to the AP");
+    SD_LOG("Already connected to: %s\n", ssid.c_str());
     return 1;
   }
 
@@ -76,6 +78,7 @@ int Network::connect(String ssid, String psd) {
   WiFi.mode(WIFI_AP_STA);
   WiFi.softAPConfig(AP_local_ip, AP_gateway, AP_subnet);
   SERIAL_ECHO("Connecting to ");SERIAL_ECHOLN(ssid.c_str());
+  SD_LOG("Attempting to connect to WiFi: %s\n", ssid.c_str());
   WiFi.begin(ssid.c_str(), psd.c_str());
 
   // Wait for connection
@@ -88,12 +91,14 @@ int Network::connect(String ssid, String psd) {
       Serial.println("");
       wifiConnecting = false;
       Serial.println("Connect fail, please check your SSID and password");
+      SD_LOG("WiFi connection failed to: %s (timeout)\n", ssid.c_str());
       return 2;
     }
     else
       delay(500);
   }
 
+  SD_LOG("WiFi connected successfully to: %s\n", ssid.c_str());
   config.save(ssid.c_str(), psd.c_str());
   //String sIp = IpAddress2String(WiFi.localIP());
   //config.save_ip(sIp.c_str());
@@ -179,6 +184,7 @@ bool Network::isSTAmode() {
 }
 
 void Network::startSoftAP() {
+  SD_LOGLN("Starting WiFi Access Point...");
   WiFi.mode(WIFI_AP_STA);
   WiFi.softAPConfig(AP_local_ip, AP_gateway, AP_subnet);
   
@@ -186,12 +192,16 @@ void Network::startSoftAP() {
   const char* AP_SSID = config.apSSID();
   const char* AP_PASSWORD = config.apPassword();
   
+  SD_LOG("AP SSID: %s\n", AP_SSID);
+  
   // Start AP with or without password
   bool apStarted;
   if (strlen(AP_PASSWORD) >= 8) {
     apStarted = WiFi.softAP(AP_SSID, AP_PASSWORD);  // With password
+    SD_LOGLN("AP mode: Password protected");
   } else {
     apStarted = WiFi.softAP(AP_SSID);               // Open network
+    SD_LOGLN("AP mode: Open network");
   }
   
   if (apStarted)
@@ -205,13 +215,16 @@ void Network::startSoftAP() {
     Serial.print("IP address = ");
     Serial.println(WiFi.softAPIP());
     Serial.println(String("MAC address = ")  + WiFi.softAPmacAddress().c_str());
+    SD_LOG("AP started successfully - IP: %s\n", WiFi.softAPIP().toString().c_str());
     config.clear();
   } 
   else
   { 
     Serial.println("WiFiAP Failed");
+    SD_LOGLN("ERROR: WiFi AP failed to start");
     delay(1000);
     Serial.println("restart now...");
+    SD_LOGLN("Restarting device due to AP failure");
     ESP.restart();
   }
 
