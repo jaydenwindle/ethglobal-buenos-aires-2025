@@ -10,8 +10,6 @@ import { SDCardAPI, FileEntry } from "../services/sdcard";
 import { useTheme } from "../theme/ThemeContext";
 import { createMetadataBuilder, createZoraUploaderForCreator, setApiKey } from "@zoralabs/coins-sdk";
 import { Address } from "viem";
-import { PinataSDK } from "pinata";
-import * as FileSystem from 'expo-file-system';
 
 // Types for the state machine
 type MintPhotoContext = {
@@ -51,12 +49,6 @@ const CREATOR_ADDRESS = "0x17cd072cBd45031EFc21Da538c783E0ed3b25DCc";
 
 // Persistent BLE Manager instance
 const bleManager = new BleManager();
-
-// Initialize Pinata SDK
-const pinata = new PinataSDK({
-  pinataJwt: process.env.EXPO_PUBLIC_PINATA_JWT!,
-  pinataGateway: process.env.EXPO_PUBLIC_PINATA_GATEWAY,
-});
 
 setApiKey(process.env.EXPO_PUBLIC_ZORA_API_KEY)
 
@@ -272,24 +264,36 @@ const downloadFile = fromCallback<
 });
 
 // Promise actor to upload image to Pinata
-const uploadImageToPinata = fromPromise<string, { base64Data: string; fileName: string }>(async ({ input }) => {
+const uploadImageToPinata = fromPromise<string, { localFileUri: string; fileName: string }>(async ({ input }) => {
   console.log(`Uploading image to Pinata: ${input.fileName}`);
 
   try {
-    console.log(`Using cached base64 data, size: ${input.base64Data.length} chars`);
+    // Create FormData for Pinata API
+    const formData = new FormData();
+    formData.append('file', {
+      uri: input.localFileUri,
+      name: input.fileName,
+      type: 'image/jpg',
+    } as any);
 
-    // Create a File from base64 data URI
-    const dataUri = `data:image/jpeg;base64,${input.base64Data}`;
-    const response = await fetch(dataUri);
-    const blob = await response.blob();
-    const file = new File([blob], input.fileName, { type: 'image/jpeg' });
+    console.log('Uploading to Pinata API...');
 
-    console.log(`File created, size: ${file.size} bytes`);
+    // Upload to Pinata API
+    const uploadResponse = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.EXPO_PUBLIC_PINATA_JWT}`,
+      },
+      body: formData,
+    });
 
-    // Upload to Pinata
-    console.log('Uploading to Pinata...');
-    const upload = await pinata.upload.file(file);
-    const ipfsUri = `ipfs://${upload.cid}`;
+    if (!uploadResponse.ok) {
+      const errorText = await uploadResponse.text();
+      throw new Error(`Pinata API error (${uploadResponse.status}): ${errorText}`);
+    }
+
+    const result = await uploadResponse.json();
+    const ipfsUri = `ipfs://${result.IpfsHash}`;
 
     console.log(`Image uploaded to IPFS: ${ipfsUri}`);
     return ipfsUri;
@@ -618,7 +622,36 @@ const bluetoothMachine = createMachine({
         FileDownloaded: {
           on: {
             generateMetadata: {
+              target: 'SendingSleepBeforeUpload',
+            },
+          },
+        },
+        SendingSleepBeforeUpload: {
+          invoke: {
+            src: sendCommand,
+            input: ({ context }) => ({
+              device: context.connectedDevice!,
+              command: 'SLEEP',
+            }),
+            onDone: {
+              target: 'AwaitingSleepResponseBeforeUpload',
+            },
+            onError: {
+              target: 'AwaitingSleepResponseBeforeUpload',
+              actions: assign({
+                error: ({ event }) => `Failed to send SLEEP command: ${event.error instanceof Error ? event.error.message : 'Unknown error'}`,
+              }),
+            },
+          },
+        },
+        AwaitingSleepResponseBeforeUpload: {
+          on: {
+            dataReceived: {
               target: 'UploadingImage',
+              guard: ({ event }) => {
+                const data = event.data.toLowerCase();
+                return data.includes('zzz') || data.includes('wake');
+              },
             },
           },
         },
@@ -626,7 +659,7 @@ const bluetoothMachine = createMachine({
           invoke: {
             src: uploadImageToPinata,
             input: ({ context }) => ({
-              base64Data: context.base64Data!,
+              localFileUri: context.localFileUri!,
               fileName: context.downloadingFile?.name || 'photo.jpg',
             }),
             onDone: {
@@ -953,6 +986,22 @@ export const MintPhotoScreen = () => {
                 onPress={() => send({ type: 'generateMetadata' })}
                 title="Upload Image to IPFS"
               />
+            </View>
+          )}
+
+          {snapshot.matches('DeviceConnected.SendingSleepBeforeUpload') && (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color={colors.accent} />
+              <Text style={styles.loadingText}>Preparing SD card for upload...</Text>
+              <Text style={styles.loadingSubtext}>Sending SLEEP command</Text>
+            </View>
+          )}
+
+          {snapshot.matches('DeviceConnected.AwaitingSleepResponseBeforeUpload') && (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color={colors.accent} />
+              <Text style={styles.loadingText}>Waiting for SD card response...</Text>
+              <Text style={styles.loadingSubtext}>Confirming sleep mode</Text>
             </View>
           )}
 
