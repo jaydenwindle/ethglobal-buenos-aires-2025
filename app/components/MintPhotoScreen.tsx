@@ -8,8 +8,9 @@ import { Buffer } from "buffer";
 import WifiManager from "react-native-wifi-reborn";
 import { SDCardAPI, FileEntry } from "../services/sdcard";
 import { useTheme } from "../theme/ThemeContext";
-import { createMetadataBuilder, createZoraUploaderForCreator, setApiKey } from "@zoralabs/coins-sdk";
+import { createMetadataBuilder, createZoraUploaderForCreator, setApiKey, ValidMetadataURI } from "@zoralabs/coins-sdk";
 import { Address } from "viem";
+import { useCurrentUser } from "@coinbase/cdp-hooks";
 
 // Types for the state machine
 type MintPhotoContext = {
@@ -26,13 +27,14 @@ type MintPhotoContext = {
   localFileUri?: string;
   base64Data?: string;
   imageIpfsUri?: string;
-  metadataIpfsUri?: string;
+  metadata?: any;
+  metadataUri?: string;
   creatorAddress?: string;
 };
 
 type MintPhotoEvents =
   | { type: 'retry' }
-  | { type: 'start' }
+  | { type: 'start'; creatorAddress: string }
   | { type: 'dataReceived'; data: string }
   | { type: 'retryWifi' }
   | { type: 'downloadProgress'; progress: number }
@@ -51,6 +53,50 @@ const CREATOR_ADDRESS = "0x17cd072cBd45031EFc21Da538c783E0ed3b25DCc";
 const bleManager = new BleManager();
 
 setApiKey(process.env.EXPO_PUBLIC_ZORA_API_KEY)
+
+// Custom Pinata uploader for Zora SDK
+type UploadResult = {
+  url: ValidMetadataURI;
+  size: number | undefined;
+  mimeType: string | undefined;
+};
+
+interface Uploader {
+  upload(file: File): Promise<UploadResult>;
+}
+
+const createPinataUploader = (): Uploader => ({
+  async upload(file: File): Promise<UploadResult> {
+    console.log(`Uploading to Pinata: ${file.name}`);
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const response = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.EXPO_PUBLIC_PINATA_JWT}`,
+      },
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Pinata upload failed (${response.status}): ${errorText}`);
+    }
+
+    const result = await response.json();
+    const ipfsUrl = `ipfs://${result.IpfsHash}`;
+
+    console.log(`Uploaded to IPFS: ${ipfsUrl}`);
+
+    return {
+      url: ipfsUrl as ValidMetadataURI,
+      size: result.PinSize,
+      mimeType: file.type,
+    };
+  }
+});
 
 // Helper function to parse WiFi credentials from received data
 const parseWifiCredentials = (data: string): { ssid: string; password: string } | null => {
@@ -305,6 +351,59 @@ const uploadImageToPinata = fromPromise<string, { localFileUri: string; fileName
   }
 });
 
+// Promise actor to generate Zora metadata
+const generateZoraMetadata = fromPromise<{ metadata: any; metadataUri: string }, { imageIpfsUri: string; fileName: string; creatorAddress: string }>(async ({ input }) => {
+  console.log(`Generating Zora metadata for: ${input.fileName}`);
+
+  try {
+    // Generate metadata using Zora SDK
+    const metadata = createMetadataBuilder()
+      .withName("digicam.eth photo")
+      .withSymbol("PHOTO")
+      .withDescription(`photo captured with digicam-0001: ${input.fileName}`)
+      .withImageURI(input.imageIpfsUri)
+      .generateMetadata();
+
+    console.log(`Metadata generated:`, metadata);
+
+    // Upload metadata JSON to Pinata
+    console.log('Uploading metadata to IPFS...');
+    const response = await fetch('https://api.pinata.cloud/pinning/pinJSONToIPFS', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${process.env.EXPO_PUBLIC_PINATA_JWT}`,
+      },
+      body: JSON.stringify({
+        pinataContent: metadata,
+        pinataMetadata: {
+          name: `metadata-${input.fileName}.json`
+        }
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Pinata metadata upload failed (${response.status}): ${errorText}`);
+    }
+
+    const result = await response.json();
+    const metadataUri = `ipfs://${result.IpfsHash}`;
+
+    console.log(`Metadata uploaded to IPFS: ${metadataUri}`);
+
+    return {
+      metadata,
+      metadataUri
+    };
+
+  } catch (error: any) {
+    const errorMessage = error?.message || error?.toString() || 'Unknown error';
+    console.log(`Metadata generation/upload failed: ${errorMessage}`);
+    throw new Error(`Failed to generate/upload metadata: ${errorMessage}`);
+  }
+});
+
 // Callback actor to monitor notifications from the device
 const monitorNotifications = fromCallback<
   { type: 'dataReceived'; data: string },
@@ -408,7 +507,12 @@ const bluetoothMachine = createMachine({
       states: {
         WaitingForUserInput: {
           on: {
-            start: 'SendingSleepCommand',
+            start: {
+              target: 'SendingSleepCommand',
+              actions: assign({
+                creatorAddress: ({ event }) => event.creatorAddress,
+              }),
+            },
           },
         },
         SendingSleepCommand: {
@@ -620,10 +724,8 @@ const bluetoothMachine = createMachine({
           // Could add retry logic here
         },
         FileDownloaded: {
-          on: {
-            generateMetadata: {
-              target: 'SendingSleepBeforeUpload',
-            },
+          always: {
+            target: 'SendingSleepBeforeUpload',
           },
         },
         SendingSleepBeforeUpload: {
@@ -647,11 +749,18 @@ const bluetoothMachine = createMachine({
         AwaitingSleepResponseBeforeUpload: {
           on: {
             dataReceived: {
-              target: 'UploadingImage',
+              target: 'ReadyToUpload',
               guard: ({ event }) => {
                 const data = event.data.toLowerCase();
                 return data.includes('zzz') || data.includes('wake');
               },
+            },
+          },
+        },
+        ReadyToUpload: {
+          on: {
+            generateMetadata: {
+              target: 'UploadingImage',
             },
           },
         },
@@ -681,7 +790,39 @@ const bluetoothMachine = createMachine({
           // Could add retry logic here
         },
         ImageUploaded: {
-          // Final state - image is uploaded to IPFS
+          always: {
+            target: 'GeneratingMetadata',
+          },
+        },
+        GeneratingMetadata: {
+          invoke: {
+            src: generateZoraMetadata,
+            input: ({ context }) => ({
+              imageIpfsUri: context.imageIpfsUri!,
+              fileName: context.downloadingFile?.name || 'photo.jpg',
+              creatorAddress: context.creatorAddress || CREATOR_ADDRESS,
+            }),
+            onDone: {
+              target: 'MetadataGenerated',
+              actions: assign({
+                error: undefined,
+                metadata: ({ event }) => event.output.metadata,
+                metadataUri: ({ event }) => event.output.metadataUri,
+              }),
+            },
+            onError: {
+              target: 'MetadataGenerationFailed',
+              actions: assign({
+                error: ({ event }) => event.error instanceof Error ? event.error.message : 'Unknown error',
+              }),
+            },
+          },
+        },
+        MetadataGenerationFailed: {
+          // Could add retry logic here
+        },
+        MetadataGenerated: {
+          // Final state - metadata is generated and uploaded
         },
       },
     },
@@ -693,6 +834,9 @@ const bluetoothMachine = createMachine({
 export const MintPhotoScreen = () => {
   const [snapshot, send] = useMachine(bluetoothMachine)
   const { colors } = useTheme()
+  const { currentUser } = useCurrentUser()
+
+  const creatorAddress = currentUser?.evmSmartAccounts?.[0]
 
   // Cleanup BLE manager on unmount
   useEffect(() => {
@@ -831,7 +975,10 @@ export const MintPhotoScreen = () => {
           {snapshot.matches('DeviceConnected.WaitingForUserInput') && (
             <View style={styles.successContainer}>
               <Text style={styles.successText}>✓ Connected to {snapshot.context.deviceName}!</Text>
-              <Button onPress={() => send({ type: 'start' })} title="Start Photo Transfer" />
+              <Button
+                onPress={() => send({ type: 'start', creatorAddress: creatorAddress || CREATOR_ADDRESS })}
+                title="Start Photo Transfer"
+              />
             </View>
           )}
 
@@ -970,22 +1117,10 @@ export const MintPhotoScreen = () => {
           )}
 
           {snapshot.matches('DeviceConnected.FileDownloaded') && (
-            <View style={styles.successContainer}>
-              <Text style={styles.successText}>✓ Photo Downloaded!</Text>
-              {snapshot.context.downloadingFile && (
-                <Text style={styles.loadingSubtext}>{snapshot.context.downloadingFile.name}</Text>
-              )}
-              {snapshot.context.localFileUri && (
-                <Image
-                  source={{ uri: snapshot.context.localFileUri }}
-                  style={styles.downloadedImage}
-                  resizeMode="cover"
-                />
-              )}
-              <Button
-                onPress={() => send({ type: 'generateMetadata' })}
-                title="Upload Image to IPFS"
-              />
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color={colors.accent} />
+              <Text style={styles.loadingText}>✓ Photo Downloaded!</Text>
+              <Text style={styles.loadingSubtext}>Preparing for upload...</Text>
             </View>
           )}
 
@@ -1002,6 +1137,26 @@ export const MintPhotoScreen = () => {
               <ActivityIndicator size="large" color={colors.accent} />
               <Text style={styles.loadingText}>Waiting for SD card response...</Text>
               <Text style={styles.loadingSubtext}>Confirming sleep mode</Text>
+            </View>
+          )}
+
+          {snapshot.matches('DeviceConnected.ReadyToUpload') && (
+            <View style={styles.successContainer}>
+              <Text style={styles.successText}>✓ Ready to Upload!</Text>
+              {snapshot.context.downloadingFile && (
+                <Text style={styles.loadingSubtext}>{snapshot.context.downloadingFile.name}</Text>
+              )}
+              {snapshot.context.localFileUri && (
+                <Image
+                  source={{ uri: snapshot.context.localFileUri }}
+                  style={styles.downloadedImage}
+                  resizeMode="cover"
+                />
+              )}
+              <Button
+                onPress={() => send({ type: 'generateMetadata' })}
+                title="Upload Image to IPFS"
+              />
             </View>
           )}
 
@@ -1042,13 +1197,40 @@ export const MintPhotoScreen = () => {
           )}
 
           {snapshot.matches('DeviceConnected.ImageUploaded') && (
-            <View style={styles.successContainer}>
-              <Text style={styles.successText}>✓ Image Uploaded to IPFS!</Text>
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color={colors.accent} />
+              <Text style={styles.loadingText}>✓ Image Uploaded to IPFS!</Text>
+              <Text style={styles.loadingSubtext}>Preparing metadata...</Text>
+            </View>
+          )}
+
+          {snapshot.matches('DeviceConnected.GeneratingMetadata') && (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color={colors.accent} />
+              <Text style={styles.loadingText}>Generating Zora metadata...</Text>
               {snapshot.context.downloadingFile && (
                 <Text style={styles.loadingSubtext}>{snapshot.context.downloadingFile.name}</Text>
               )}
-              {snapshot.context.imageIpfsUri && (
-                <Text style={styles.loadingSubtext}>IPFS URI: {snapshot.context.imageIpfsUri}</Text>
+            </View>
+          )}
+
+          {snapshot.matches('DeviceConnected.MetadataGenerationFailed') && (
+            <View style={styles.errorContainer}>
+              <Text style={styles.errorText}>Metadata Generation Failed</Text>
+              {snapshot.context.downloadingFile && (
+                <Text style={{ color: colors.text }}>{snapshot.context.downloadingFile.name}</Text>
+              )}
+              {snapshot.context.error && (
+                <Text style={styles.errorDetail}>{snapshot.context.error}</Text>
+              )}
+            </View>
+          )}
+
+          {snapshot.matches('DeviceConnected.MetadataGenerated') && (
+            <View style={styles.successContainer}>
+              <Text style={styles.successText}>✓ Metadata Uploaded to IPFS!</Text>
+              {snapshot.context.downloadingFile && (
+                <Text style={styles.loadingSubtext}>{snapshot.context.downloadingFile.name}</Text>
               )}
               {snapshot.context.localFileUri && (
                 <Image
@@ -1056,6 +1238,24 @@ export const MintPhotoScreen = () => {
                   style={styles.downloadedImage}
                   resizeMode="cover"
                 />
+              )}
+              {snapshot.context.imageIpfsUri && (
+                <Text style={{ ...styles.loadingSubtext, marginTop: 8 }}>
+                  Image: {snapshot.context.imageIpfsUri}
+                </Text>
+              )}
+              {snapshot.context.metadataUri && (
+                <Text style={{ ...styles.loadingSubtext, marginTop: 8 }}>
+                  Metadata: {snapshot.context.metadataUri}
+                </Text>
+              )}
+              {snapshot.context.metadata && (
+                <View style={{ marginTop: 16, width: '100%' }}>
+                  <Text style={styles.loadingSubtext}>Metadata Content:</Text>
+                  <Text style={{ ...styles.loadingSubtext, fontFamily: 'monospace', fontSize: 12 }}>
+                    {JSON.stringify(snapshot.context.metadata, null, 2)}
+                  </Text>
+                </View>
               )}
             </View>
           )}
