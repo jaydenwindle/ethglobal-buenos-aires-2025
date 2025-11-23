@@ -60,26 +60,58 @@ void SDControl::takeControl()	{
 
 	_weTookBus = true;
  
+	#ifdef SD_POWER_PIN
+	  // Ensure SD card has power (for low-power devices)
+	  digitalWrite(SD_POWER_PIN, HIGH);
+	  delay(200); // Wait for power to stabilize
+	#endif
+	
 	digitalWrite(SD_SWITCH_PIN,LOW); // Switch SD pins to ESP32
-	delay(100); // Increased delay for SD card to settle
+	delay(300); // Increased delay for SD card to settle (especially for low-power devices)
+
+	// Reduce CPU frequency for stable SD card operation on low-power devices
+	uint32_t originalCpuFreq = getCpuFrequencyMhz();
+	if (originalCpuFreq > 80) {
+		setCpuFrequencyMhz(80); // Reduce to 80MHz for stable SD operation
+		delay(50); // Let frequency stabilize
+	}
 
 	SPI.begin(SD_SCLK_PIN,SD_MISO_PIN,SD_MOSI_PIN,SD_CS_PIN);
+	delay(200); // Additional delay after SPI init (increased for low-power devices)
 
 	int cnt = 0;
 	bool sdInitialized = false;
-	while(cnt < 5) {
+	while(cnt < 10) { // Increased from 5 to 10 attempts
+		SERIAL_ECHO("SD init attempt ");
+		SERIAL_ECHO(String(cnt + 1).c_str());
+		SERIAL_ECHO("...");
+		
 		if(SD.begin(SD_CS_PIN)) {
 			sdInitialized = true;
+			SERIAL_ECHOLN(" SUCCESS");
 			DEBUG_LOG("SD card initialized on attempt %d\n", cnt + 1);
 			break;
 		}
+		
+		SERIAL_ECHOLN(" FAILED");
 		DEBUG_LOG("SD init attempt %d failed\n", cnt + 1);
-		delay(500);
+		delay(1000); // Increased delay between attempts
 		cnt++;
 	}
 	
+	// Restore original CPU frequency
+	if (originalCpuFreq > 80) {
+		setCpuFrequencyMhz(originalCpuFreq);
+	}
+	
 	if(!sdInitialized) {
-		DEBUG_LOG("SD card initialization failed after 5 attempts\n");
+		SERIAL_ECHOLN("ERROR: SD card initialization failed after 10 attempts");
+		SERIAL_ECHOLN("Please check:");
+		SERIAL_ECHOLN("  - SD card is inserted");
+		SERIAL_ECHOLN("  - SD card is formatted as FAT32");
+		SERIAL_ECHOLN("  - SD card is not corrupted");
+		SERIAL_ECHOLN("  - Device has sufficient power");
+		DEBUG_LOG("SD card initialization failed after 10 attempts\n");
 	}
   
 	DEBUG_LOG("takeControl\n");

@@ -557,32 +557,49 @@ void FSWebServer::onHttpList(AsyncWebServerRequest * request) {
   
   DEBUG_LOG("List request for path: '%s', offset=%d, limit=%d\n", path.c_str(), offset, limit);
 
-  // Take control and give SD card time to initialize
+  // Take control - this already handles SD initialization with retries
   sdcontrol.takeControl();
-  delay(100); // Give SD card time to be ready
+  
+  // Give SD card extra time to be ready after initialization
+  // Low-power devices need more time for card detection
+  delay(1000);
   
   DEBUG_LOG("Opening path: '%s'\n", path.c_str());
   
-  // Try to open the directory
-  File dir = SD.open(path.c_str());
+  // Check if SD card is actually mounted - retry if needed for low-power devices
+  uint8_t cardType = CARD_NONE;
+  int cardCheckAttempts = 0;
+  while (cardCheckAttempts < 5) {
+    cardType = SD.cardType();
+    if (cardType != CARD_NONE) {
+      break;
+    }
+    DEBUG_LOG("Card type check attempt %d: no card detected, retrying...\n", cardCheckAttempts + 1);
+    delay(500);
+    cardCheckAttempts++;
+  }
+  
+  if (cardType == CARD_NONE) {
+    DEBUG_LOG("No SD card detected after %d attempts\n", cardCheckAttempts);
+    sdcontrol.relinquishControl();
+    request->send(500, "text/plain", "LIST:NO_SD_CARD");
+    return;
+  }
+  
+  DEBUG_LOG("SD card type: %d (detected on attempt %d)\n", cardType, cardCheckAttempts + 1);
+  DEBUG_LOG("SD card size: %llu MB\n", SD.cardSize() / (1024 * 1024));
+  
+  // Try to open the directory with explicit FILE_READ mode
+  File dir = SD.open(path.c_str(), FILE_READ);
   
   if (!dir) {
     DEBUG_LOG("Failed to open path: '%s'\n", path.c_str());
     
-    // Try to reinitialize SD card
-    SD.end();
-    delay(50);
-    if (!SD.begin(SD_CS_PIN)) {
-      DEBUG_LOG("SD card initialization failed\n");
-      sdcontrol.relinquishControl();
-      request->send(500, "text/plain", "LIST:SD_INIT_FAILED");
-      return;
-    }
-    
-    // Try opening again
+    // Try without FILE_READ mode
     dir = SD.open(path.c_str());
+    
     if (!dir) {
-      DEBUG_LOG("Failed to open path after reinit: '%s'\n", path.c_str());
+      DEBUG_LOG("Failed to open path (second attempt): '%s'\n", path.c_str());
       sdcontrol.relinquishControl();
       String errorMsg = "LIST:BADPATH:" + path;
       request->send(500, "text/plain", errorMsg);
@@ -597,8 +614,10 @@ void FSWebServer::onHttpList(AsyncWebServerRequest * request) {
     request->send(500, "text/plain", "LIST:NOTDIR");
     return;
   }
-
+  
+  DEBUG_LOG("Directory opened successfully, rewinding...\n");
   dir.rewindDirectory();
+  DEBUG_LOG("Directory rewound, starting to read entries...\n");
   
   // Use AsyncResponseStream for efficient streaming
   AsyncResponseStream *response = request->beginResponseStream("application/json");
