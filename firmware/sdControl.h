@@ -8,6 +8,7 @@ public:
   SDControl() { }
   static void setup();
   static void takeControl();
+  static void takeControlLowPower(); // Power-optimized version for downloads
   static void relinquishControl();
   static int canWeTakeControl();
   static bool wehaveControl();

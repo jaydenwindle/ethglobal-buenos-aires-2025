@@ -7,6 +7,7 @@
 #include "network.h"
 #include "config.h"
 #include "bluetooth.h"
+#include "pins.h"
 
 // Debug control - set to false for production (eliminates all debug overhead)
 constexpr bool ENABLE_VERBOSE_LOGGING = false;
@@ -305,6 +306,15 @@ void FSWebServer::onHttpDownload(AsyncWebServerRequest *request) {
       DEBUG_LOG("Client: %s\n", request->client()->remoteIP().toString().c_str());
     }
 
+    // Power optimization: Reduce WiFi TX power and CPU frequency during download
+    // Store original settings to restore later
+    wifi_power_t originalPower = WiFi.getTxPower();
+    WiFi.setTxPower(WIFI_POWER_11dBm); // Reduce from default 19.5dBm to 11dBm
+    
+    // Reduce CPU frequency for I/O-bound operations (saves ~40% power)
+    uint32_t originalCpuFreq = getCpuFrequencyMhz();
+    setCpuFrequencyMhz(80); // Reduce from 240MHz to 80MHz
+
     switch(sdcontrol.canWeTakeControl())
     { 
       case -1: {
@@ -359,10 +369,11 @@ void FSWebServer::onHttpDownload(AsyncWebServerRequest *request) {
       }
     }
 
-    sdcontrol.takeControl();
+    // Use low-power SD control for downloads
+    sdcontrol.takeControlLowPower();
     
     if constexpr (ENABLE_VERBOSE_LOGGING) {
-      SERIAL_ECHOLN("SD control acquired");
+      SERIAL_ECHOLN("SD control acquired (low power mode)");
     }
     
     // Open file
@@ -495,6 +506,10 @@ void FSWebServer::onHttpDownload(AsyncWebServerRequest *request) {
       }
     }
     
+    // Restore original power settings
+    WiFi.setTxPower(originalPower);
+    setCpuFrequencyMhz(originalCpuFreq);
+    
     if constexpr (ENABLE_VERBOSE_LOGGING) {
       SERIAL_ECHOLN("=== Download Complete ===");
     }
@@ -521,14 +536,30 @@ void FSWebServer::onHttpList(AsyncWebServerRequest * request) {
   const AsyncWebParameter* p = request->getParam((size_t)0);
   String path = p->value();
   
-  DEBUG_LOG("List request for path: '%s'\n", path.c_str());
-
-  sdcontrol.takeControl();
+  // Check for pagination parameters
+  int offset = 0;
+  int limit = 20; // Default items per page (aggressively reduced for slower devices)
+  
+  if (request->hasParam("offset")) {
+    offset = request->getParam("offset")->value().toInt();
+  }
+  if (request->hasParam("limit")) {
+    limit = request->getParam("limit")->value().toInt();
+    // Clamp limit to reasonable range
+    if (limit < 5) limit = 5;
+    if (limit > 50) limit = 50; // Reduced max from 100 to 50
+  }
   
   // Ensure path starts with /
   if (path.length() == 0 || path[0] != '/') {
     path = "/" + path;
   }
+  
+  DEBUG_LOG("List request for path: '%s', offset=%d, limit=%d\n", path.c_str(), offset, limit);
+
+  // Take control and give SD card time to initialize
+  sdcontrol.takeControl();
+  delay(100); // Give SD card time to be ready
   
   DEBUG_LOG("Opening path: '%s'\n", path.c_str());
   
@@ -537,10 +568,26 @@ void FSWebServer::onHttpList(AsyncWebServerRequest * request) {
   
   if (!dir) {
     DEBUG_LOG("Failed to open path: '%s'\n", path.c_str());
-    sdcontrol.relinquishControl();
-    String errorMsg = "LIST:BADPATH:" + path;
-    request->send(500, "text/plain", errorMsg);
-    return;
+    
+    // Try to reinitialize SD card
+    SD.end();
+    delay(50);
+    if (!SD.begin(SD_CS_PIN)) {
+      DEBUG_LOG("SD card initialization failed\n");
+      sdcontrol.relinquishControl();
+      request->send(500, "text/plain", "LIST:SD_INIT_FAILED");
+      return;
+    }
+    
+    // Try opening again
+    dir = SD.open(path.c_str());
+    if (!dir) {
+      DEBUG_LOG("Failed to open path after reinit: '%s'\n", path.c_str());
+      sdcontrol.relinquishControl();
+      String errorMsg = "LIST:BADPATH:" + path;
+      request->send(500, "text/plain", errorMsg);
+      return;
+    }
   }
   
   if (!dir.isDirectory()) {
@@ -554,17 +601,43 @@ void FSWebServer::onHttpList(AsyncWebServerRequest * request) {
   dir.rewindDirectory();
   
   // Use AsyncResponseStream for efficient streaming
-  AsyncResponseStream *response = request->beginResponseStream("text/json");
-  response->print("[");
+  AsyncResponseStream *response = request->beginResponseStream("application/json");
+  
+  // Add headers for better compatibility and performance
+  response->addHeader("Access-Control-Allow-Origin", "*");
+  response->addHeader("Cache-Control", "no-cache");
+  response->addHeader("Connection", "keep-alive");
+  
+  response->print("{\"items\":[");
   
   bool first = true;
   int count = 0;
-  const int MAX_ITEMS = 200; // Reduced limit
+  int skipped = 0;
+  int totalCount = 0;
   
   // Only list current directory (non-recursive)
-  while (count < MAX_ITEMS) {
+  while (true) {
     File entry = dir.openNextFile();
     if (!entry) {
+      break;
+    }
+    
+    totalCount++;
+    
+    // Skip entries before offset
+    if (skipped < offset) {
+      entry.close();
+      skipped++;
+      continue;
+    }
+    
+    // Stop if we've reached the limit
+    if (count >= limit) {
+      entry.close();
+      // Continue counting to get total
+      while (dir.openNextFile()) {
+        totalCount++;
+      }
       break;
     }
     
@@ -610,9 +683,24 @@ void FSWebServer::onHttpList(AsyncWebServerRequest * request) {
     
     entry.close();
     count++;
+    
+    // Yield more frequently to prevent watchdog timeout on slower devices
+    if (count % 5 == 0) {
+      yield();
+      delay(1); // Small delay to allow other tasks
+    }
   }
   
-  response->print("]");
+  response->print("],\"total\":");
+  response->print(totalCount);
+  response->print(",\"offset\":");
+  response->print(offset);
+  response->print(",\"limit\":");
+  response->print(limit);
+  response->print(",\"hasMore\":");
+  response->print((offset + count) < totalCount ? "true" : "false");
+  response->print("}");
+  
   request->send(response);
   
   dir.close();

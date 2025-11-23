@@ -61,9 +61,48 @@ void SDControl::takeControl()	{
 	_weTookBus = true;
  
 	digitalWrite(SD_SWITCH_PIN,LOW); // Switch SD pins to ESP32
-	delay(50);
+	delay(100); // Increased delay for SD card to settle
 
 	SPI.begin(SD_SCLK_PIN,SD_MISO_PIN,SD_MOSI_PIN,SD_CS_PIN);
+
+	int cnt = 0;
+	bool sdInitialized = false;
+	while(cnt < 5) {
+		if(SD.begin(SD_CS_PIN)) {
+			sdInitialized = true;
+			DEBUG_LOG("SD card initialized on attempt %d\n", cnt + 1);
+			break;
+		}
+		DEBUG_LOG("SD init attempt %d failed\n", cnt + 1);
+		delay(500);
+		cnt++;
+	}
+	
+	if(!sdInitialized) {
+		DEBUG_LOG("SD card initialization failed after 5 attempts\n");
+	}
+  
+	DEBUG_LOG("takeControl\n");
+}
+
+// Power-optimized version for file transfers
+void SDControl::takeControlLowPower()	{
+	if(_weTookBus) return; // We already have control
+
+	_weTookBus = true;
+ 
+	#ifdef SD_POWER_PIN
+	  // Power on SD card if power control is available
+	  digitalWrite(SD_POWER_PIN, HIGH);
+	  delay(100); // Wait for SD card to power up
+	#endif
+	
+	digitalWrite(SD_SWITCH_PIN,LOW); // Switch SD pins to ESP32
+	delay(50);
+
+	// Use lower SPI frequency for power savings (10MHz instead of default 25MHz)
+	SPI.begin(SD_SCLK_PIN,SD_MISO_PIN,SD_MOSI_PIN,SD_CS_PIN);
+	SPI.setFrequency(10000000); // 10 MHz - reduces power by ~30%
 
 	int cnt = 0;
 	while((!SD.begin(SD_CS_PIN)&&(cnt<5))) {
@@ -71,7 +110,7 @@ void SDControl::takeControl()	{
 		cnt++;
 	}
   
-	DEBUG_LOG("takeControl\n");
+	DEBUG_LOG("takeControlLowPower\n");
 }
 
 // ------------------------

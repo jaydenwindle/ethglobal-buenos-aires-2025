@@ -26,24 +26,45 @@ GET /relinquish
 ## File System Operations
 
 ### ls - List Directory
-Lists files and directories in the specified path (non-recursive).
+Lists files and directories in the specified path (non-recursive) with optional pagination support.
 
-**Endpoint:** `GET /ls?dir={directory_path}`
+**Endpoint:** `GET /ls?dir={directory_path}[&offset={offset}][&limit={limit}]`
 
 **Legacy Endpoint:** `GET /list?dir={directory_path}` (maintained for backward compatibility)
 
 **Parameters:**
 - `dir` (required) - Directory path to list (e.g., "/", "/gcodes")
+- `offset` (optional) - Number of items to skip (default: 0)
+- `limit` (optional) - Maximum items to return (default: 50, min: 10, max: 100)
 
 **Response:**
-- `200 OK` - JSON array of directory entries
+- `200 OK` - JSON object with paginated directory entries (or array for backward compatibility)
 - `500 Internal Server Error` - Error messages:
   - "LIST:SDBUSY" - SD card is being used by printer
   - "LIST:BADARGS" - Missing path parameter
   - "LIST:BADPATH:{path}" - Invalid or non-existent path
   - "LIST:NOTDIR" - Path is not a directory
 
-**Response Format:**
+**Response Format (Paginated - New):**
+```json
+{
+  "items": [
+    {
+      "type": "dir|file",
+      "name": "filename.gcode",
+      "path": "/full/path/to/file",
+      "size": 12345
+    },
+    ...
+  ],
+  "total": 250,
+  "offset": 0,
+  "limit": 50,
+  "hasMore": true
+}
+```
+
+**Response Format (Legacy - Backward Compatible):**
 ```json
 [
   {
@@ -68,12 +89,22 @@ The `path` field is constructed by combining the requested directory path with t
 - If listing `/DCIM`: returns paths like `/DCIM/NIKON100`, `/DCIM/image.jpg`
 - If listing `/DCIM/NIKON100`: returns paths like `/DCIM/NIKON100/photo.jpg`
 
+**Response Fields:**
+- `items`: Array of directory entries (paginated format only)
+- `total`: Total number of items in the directory
+- `offset`: Current offset (number of items skipped)
+- `limit`: Maximum items returned in this response
+- `hasMore`: Boolean indicating if there are more items to load
+
 **Notes:**
-- Maximum 200 items per request
+- Default limit is 50 items per request (reduced from 200 for better performance)
+- Maximum limit is 100 items per request
 - Only lists immediate children (non-recursive)
 - Request path parameter (`dir`) must start with "/"
 - Response `path` field always contains the full absolute path
 - Use the `path` field for subsequent operations (download, delete, nested list)
+- Pagination prevents timeouts on directories with many files
+- Watchdog timer is yielded every 10 items to prevent resets on slower devices
 
 **Examples:**
 
@@ -109,6 +140,60 @@ Response:
   {"type":"file","name":"IMG_002.jpg","path":"/DCIM/NIKON100/IMG_002.jpg","size":1987654}
 ]
 ```
+
+**Pagination Examples:**
+
+List first 50 items (default):
+```
+GET /ls?dir=/&limit=50
+
+Response:
+{
+  "items": [
+    {"type":"dir","name":"DCIM","path":"/DCIM","size":0},
+    {"type":"file","name":"readme.txt","path":"/readme.txt","size":1234},
+    ...
+  ],
+  "total": 250,
+  "offset": 0,
+  "limit": 50,
+  "hasMore": true
+}
+```
+
+List next 50 items:
+```
+GET /ls?dir=/&offset=50&limit=50
+
+Response:
+{
+  "items": [...],
+  "total": 250,
+  "offset": 50,
+  "limit": 50,
+  "hasMore": true
+}
+```
+
+List with custom page size:
+```
+GET /ls?dir=/&offset=0&limit=25
+
+Response:
+{
+  "items": [...],
+  "total": 250,
+  "offset": 0,
+  "limit": 25,
+  "hasMore": true
+}
+```
+
+**Use Cases for Pagination:**
+- **Large directories**: Prevents timeouts when listing 200+ files
+- **Progressive loading**: Show initial results quickly, load more on demand
+- **Memory efficiency**: Reduces RAM usage on ESP32
+- **Better UX**: Users see results immediately instead of waiting for everything
 
 ---
 
