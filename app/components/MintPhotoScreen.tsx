@@ -1,5 +1,6 @@
-import { View, Text, Button, Image, StyleSheet, ActivityIndicator } from "react-native"
-import { useEffect } from "react"
+import { View, Text, Button, Image, StyleSheet, ActivityIndicator, TouchableOpacity, Alert, ScrollView } from "react-native"
+import { useEffect, useState, useCallback } from "react"
+import * as Clipboard from "expo-clipboard";
 
 import { createMachine, fromPromise, fromCallback, assign } from 'xstate';
 import { useMachine } from '@xstate/react';
@@ -8,9 +9,10 @@ import { Buffer } from "buffer";
 import WifiManager from "react-native-wifi-reborn";
 import { SDCardAPI, FileEntry } from "../services/sdcard";
 import { useTheme } from "../theme/ThemeContext";
-import { createMetadataBuilder, createZoraUploaderForCreator, setApiKey, ValidMetadataURI } from "@zoralabs/coins-sdk";
+import { createMetadataBuilder, ValidMetadataURI, createCoinCall, CreateConstants } from "@zoralabs/coins-sdk";
 import { Address } from "viem";
-import { useCurrentUser } from "@coinbase/cdp-hooks";
+import { base } from "viem/chains";
+import { useCurrentUser, useSendUserOperation } from "@coinbase/cdp-hooks";
 
 // Types for the state machine
 type MintPhotoContext = {
@@ -51,8 +53,6 @@ const CREATOR_ADDRESS = "0x17cd072cBd45031EFc21Da538c783E0ed3b25DCc";
 
 // Persistent BLE Manager instance
 const bleManager = new BleManager();
-
-setApiKey(process.env.EXPO_PUBLIC_ZORA_API_KEY)
 
 // Custom Pinata uploader for Zora SDK
 type UploadResult = {
@@ -835,8 +835,12 @@ export const MintPhotoScreen = () => {
   const [snapshot, send] = useMachine(bluetoothMachine)
   const { colors } = useTheme()
   const { currentUser } = useCurrentUser()
+  const { sendUserOperation, data: txData, error: txError, status: txStatus } = useSendUserOperation()
 
-  const creatorAddress = currentUser?.evmSmartAccounts?.[0]
+  const [coinAddress, setCoinAddress] = useState<string | undefined>()
+  const [mintError, setMintError] = useState<string | undefined>()
+
+  const smartAccount = currentUser?.evmSmartAccounts?.[0]
 
   // Cleanup BLE manager on unmount
   useEffect(() => {
@@ -846,13 +850,67 @@ export const MintPhotoScreen = () => {
     };
   }, []);
 
+  const copyToClipboard = useCallback(async (text: string, label: string) => {
+    try {
+      await Clipboard.setStringAsync(text);
+      Alert.alert("Copied!", `${label} copied to clipboard.`);
+    } catch (error) {
+      Alert.alert("Error", "Failed to copy to clipboard.");
+    }
+  }, []);
+
+  const handleMintCoin = useCallback(async () => {
+    if (!smartAccount || !snapshot.context.metadataUri) {
+      setMintError('Missing smart account or metadata URI');
+      return;
+    }
+
+    setMintError(undefined);
+
+    try {
+      const args = {
+        creator: smartAccount as Address,
+        name: "digicam.eth photo",
+        symbol: "PHOTO",
+        metadata: { type: "RAW_URI" as const, uri: snapshot.context.metadataUri },
+        currency: CreateConstants.ContentCoinCurrencies.ZORA,
+        chainId: base.id,
+        startingMarketCap: CreateConstants.StartingMarketCaps.LOW,
+      };
+
+      console.log('Creating coin with args:', args);
+      const calls = await createCoinCall(args);
+
+      console.log('Sending user operation with calls:', calls);
+
+      // Send user operation
+      await sendUserOperation({
+        evmSmartAccount: smartAccount,
+        network: "base",
+        useCdpPaymaster: true,
+        calls: calls.map(call => ({
+          to: call.to as Address,
+          data: call.data as `0x${string}`,
+          value: call.value || 0n,
+        })),
+      });
+    } catch (error: any) {
+      const errorMessage = error?.message || error?.toString() || 'Failed to mint coin';
+      console.error('Error creating coin:', errorMessage);
+      setMintError(errorMessage);
+    }
+  }, [smartAccount, snapshot.context.metadataUri, sendUserOperation, setMintError]);
+
   const styles = StyleSheet.create({
     container: {
       flex: 1,
+      backgroundColor: colors.background,
+    },
+    contentContainer: {
+      flexGrow: 1,
       justifyContent: 'center',
       alignItems: 'center',
       padding: 20,
-      backgroundColor: colors.background,
     },
     loadingContainer: {
       alignItems: 'center',
@@ -929,10 +987,47 @@ export const MintPhotoScreen = () => {
       borderWidth: 1,
       borderColor: colors.border,
     },
+    walletContainer: {
+      width: '100%',
+      marginBottom: 16,
+      padding: 12,
+      backgroundColor: colors.cardBackground,
+      borderRadius: 8,
+      borderWidth: 1,
+      borderColor: colors.border,
+    },
+    walletLabel: {
+      fontSize: 12,
+      color: colors.textSecondary,
+      marginBottom: 4,
+    },
+    walletAddressRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+    },
+    walletAddress: {
+      fontSize: 14,
+      fontFamily: 'monospace',
+      color: colors.text,
+      flex: 1,
+    },
+    copyButton: {
+      marginLeft: 8,
+      paddingHorizontal: 12,
+      paddingVertical: 6,
+      backgroundColor: colors.accent,
+      borderRadius: 4,
+    },
+    copyButtonText: {
+      color: '#ffffff',
+      fontSize: 12,
+      fontWeight: '600',
+    },
   });
 
   return (
-    <View style={styles.container}>
+    <ScrollView style={styles.container} contentContainerStyle={styles.contentContainer}>
       {snapshot.value === 'CheckingBluetooth' && (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={colors.accent} />
@@ -976,7 +1071,7 @@ export const MintPhotoScreen = () => {
             <View style={styles.successContainer}>
               <Text style={styles.successText}>✓ Connected to {snapshot.context.deviceName}!</Text>
               <Button
-                onPress={() => send({ type: 'start', creatorAddress: creatorAddress || CREATOR_ADDRESS })}
+                onPress={() => send({ type: 'start', creatorAddress: smartAccount || CREATOR_ADDRESS })}
                 title="Start Photo Transfer"
               />
             </View>
@@ -1232,6 +1327,25 @@ export const MintPhotoScreen = () => {
               {snapshot.context.downloadingFile && (
                 <Text style={styles.loadingSubtext}>{snapshot.context.downloadingFile.name}</Text>
               )}
+
+              {/* Wallet Address */}
+              {smartAccount && (
+                <View style={styles.walletContainer}>
+                  <Text style={styles.walletLabel}>Wallet Address</Text>
+                  <View style={styles.walletAddressRow}>
+                    <Text style={styles.walletAddress} numberOfLines={1}>
+                      {smartAccount}
+                    </Text>
+                    <TouchableOpacity
+                      style={styles.copyButton}
+                      onPress={() => copyToClipboard(smartAccount, "Wallet Address")}
+                    >
+                      <Text style={styles.copyButtonText}>Copy</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
+
               {snapshot.context.localFileUri && (
                 <Image
                   source={{ uri: snapshot.context.localFileUri }}
@@ -1249,11 +1363,37 @@ export const MintPhotoScreen = () => {
                   Metadata: {snapshot.context.metadataUri}
                 </Text>
               )}
-              {snapshot.context.metadata && (
-                <View style={{ marginTop: 16, width: '100%' }}>
-                  <Text style={styles.loadingSubtext}>Metadata Content:</Text>
-                  <Text style={{ ...styles.loadingSubtext, fontFamily: 'monospace', fontSize: 12 }}>
-                    {JSON.stringify(snapshot.context.metadata, null, 2)}
+
+              {/* Mint Coin Button */}
+              <View style={{ marginTop: 16, width: '100%' }}>
+                <Button
+                  onPress={handleMintCoin}
+                  title={txStatus === 'pending' ? 'Minting...' : 'Mint Coin on Zora'}
+                  disabled={txStatus === 'pending'}
+                />
+              </View>
+
+              {/* Transaction Status */}
+              {txStatus === 'pending' && (
+                <View style={{ marginTop: 12, alignItems: 'center' }}>
+                  <ActivityIndicator size="small" color={colors.accent} />
+                  <Text style={styles.loadingSubtext}>Minting coin...</Text>
+                </View>
+              )}
+
+              {txStatus === 'success' && txData?.transactionHash && (
+                <View style={{ marginTop: 12, width: '100%' }}>
+                  <Text style={styles.successText}>✓ Coin Minted!</Text>
+                  <Text style={styles.loadingSubtext}>
+                    Tx: {txData.transactionHash.slice(0, 10)}...{txData.transactionHash.slice(-8)}
+                  </Text>
+                </View>
+              )}
+
+              {(txError || mintError) && (
+                <View style={{ ...styles.errorContainer, marginTop: 12 }}>
+                  <Text style={styles.errorText}>
+                    Mint Failed: {mintError || txError?.message}
                   </Text>
                 </View>
               )}
@@ -1261,6 +1401,6 @@ export const MintPhotoScreen = () => {
           )}
         </>
       )}
-    </View>
+    </ScrollView>
   )
 }
