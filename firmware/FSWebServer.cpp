@@ -378,7 +378,8 @@ void FSWebServer::onHttpDownload(AsyncWebServerRequest *request) {
     }
 
     // Use low-power SD control for downloads
-    sdcontrol.takeControlLowPower();
+    // sdcontrol.takeControlLowPower();
+    sdcontrol.takeControl();
     
     if constexpr (ENABLE_VERBOSE_LOGGING) {
       SERIAL_ECHOLN("SD control acquired (low power mode)");

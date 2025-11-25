@@ -6,15 +6,6 @@
 #include "pins.h"
 #include "serial.h"
 
-// Define SD object based on mode
-#ifdef USE_SD_MMC
-  #define SD_OBJ SD_MMC
-  #define SD_BEGIN() SD_MMC.begin("/sdcard", true) // true = 1-bit mode for compatibility
-#else
-  #define SD_OBJ SD
-  #define SD_BEGIN() SD.begin(SD_CS_PIN)
-#endif
-
 volatile long SDControl::_spiBlockoutTime = 0;
 bool SDControl::_weTookBus = false;
 volatile bool SDControl::_printerRequest = false;
@@ -45,10 +36,9 @@ void SDControl::setup() {
 	  digitalWrite(SD_POWER_PIN,LOW);
 	#endif
 
-	// NOTE: WE DISABLE THIS FOR DIGICAM
-
-	/*
+	// NOTE: DISABLED
 	// Wait for other master to assert SD card first
+	/*
 	for (int i=0; i<SPI_BLOCKOUT_PERIOD; i++)
 	{
 		delay(1000);
@@ -69,116 +59,18 @@ void SDControl::takeControl()	{
 
 	_weTookBus = true;
  
-	#ifdef SD_POWER_PIN
-	  // Ensure SD card has power (for low-power devices)
-	  digitalWrite(SD_POWER_PIN, HIGH);
-	  delay(200); // Wait for power to stabilize
-	#endif
-	
-	#ifdef USE_SD_MMC
-	  // SD_MMC mode - no switch needed, direct connection
-	  SERIAL_ECHOLN("Using SD_MMC mode (1-bit interface)");
-	  delay(100); // Give time for stability
-	#else
-	  #ifndef DISABLE_SD_SWITCH
-	    digitalWrite(SD_SWITCH_PIN,LOW); // Switch SD pins to ESP32
-	    delay(200); // Delay for SD card to settle
-	    DEBUG_LOG("SD switch activated\n");
-	  #else
-	    DEBUG_LOG("SD switch bypassed (DISABLE_SD_SWITCH defined)\n");
-	    delay(100); // Still give some time for stability
-	  #endif
-	#endif
+	digitalWrite(SD_SWITCH_PIN,LOW); // Switch SD pins to ESP32
+	delay(50);
 
-	// Reduce CPU frequency for stable SD card operation on low-power devices
-	uint32_t originalCpuFreq = getCpuFrequencyMhz();
-	if (originalCpuFreq > 80) {
-		setCpuFrequencyMhz(80); // Reduce to 80MHz for stable SD operation
-		delay(50); // Let frequency stabilize
-	}
-
-	#ifndef USE_SD_MMC
-	  // SPI mode initialization
-	  SPI.begin(SD_SCLK_PIN,SD_MISO_PIN,SD_MOSI_PIN,SD_CS_PIN);
-	  delay(100); // Delay after SPI init
-	#endif
+	SPI.begin(SD_SCLK_PIN,SD_MISO_PIN,SD_MOSI_PIN,SD_CS_PIN);
 
 	int cnt = 0;
-	bool sdInitialized = false;
-	while(cnt < 5) {
-		SERIAL_ECHO("SD init attempt ");
-		SERIAL_ECHO(String(cnt + 1).c_str());
-		#ifdef USE_SD_MMC
-		  SERIAL_ECHO(" (SD_MMC)...");
-		#else
-		  SERIAL_ECHO(" (SPI)...");
-		#endif
-		
-		if(SD_BEGIN()) {
-			sdInitialized = true;
-			SERIAL_ECHOLN(" SUCCESS");
-			DEBUG_LOG("SD card initialized on attempt %d\n", cnt + 1);
-			break;
-		}
-		
-		SERIAL_ECHOLN(" FAILED");
-		DEBUG_LOG("SD init attempt %d failed\n", cnt + 1);
+	while((!SD.begin(SD_CS_PIN)&&(cnt<5))) {
 		delay(500);
 		cnt++;
-	}
-	
-	// Restore original CPU frequency
-	if (originalCpuFreq > 80) {
-		setCpuFrequencyMhz(originalCpuFreq);
-	}
-	
-	if(!sdInitialized) {
-		SERIAL_ECHOLN("ERROR: SD card initialization failed after 5 attempts");
-		SERIAL_ECHOLN("Please check:");
-		SERIAL_ECHOLN("  - SD card is inserted");
-		SERIAL_ECHOLN("  - SD card is formatted as FAT32");
-		SERIAL_ECHOLN("  - SD card is not corrupted");
-		SERIAL_ECHOLN("  - Device has sufficient power");
-		#ifdef USE_SD_MMC
-		  SERIAL_ECHOLN("  - SD_MMC pins are correctly connected (CMD=15, CLK=14, D0=2)");
-		#endif
-		DEBUG_LOG("SD card initialization failed after 5 attempts\n");
 	}
   
 	DEBUG_LOG("takeControl\n");
-}
-
-// Power-optimized version for file transfers
-void SDControl::takeControlLowPower()	{
-	if(_weTookBus) return; // We already have control
-
-	_weTookBus = true;
- 
-	#ifdef SD_POWER_PIN
-	  // Power on SD card if power control is available
-	  digitalWrite(SD_POWER_PIN, HIGH);
-	  delay(100); // Wait for SD card to power up
-	#endif
-	
-	#ifdef USE_SD_MMC
-	  // SD_MMC mode - no switch needed
-	  delay(50);
-	#else
-	  digitalWrite(SD_SWITCH_PIN,LOW); // Switch SD pins to ESP32
-	  delay(50);
-
-	  // Use lower SPI frequency for power savings (10MHz instead of default 25MHz)
-	  SPI.begin(SD_SCLK_PIN,SD_MISO_PIN,SD_MOSI_PIN,SD_CS_PIN);
-	  SPI.setFrequency(10000000); // 10 MHz - reduces power by ~30%
-	#endif
-
-	int cnt = 0;
-	while((! SD_BEGIN() && (cnt<5))) {
-		delay(500);
-		cnt++;
-	}
-  
-	DEBUG_LOG("takeControlLowPower\n");
 }
 
 // ------------------------
@@ -190,16 +82,11 @@ void SDControl:: relinquishControl()	{
 	pinMode(SD_CLK_PIN, INPUT_PULLUP);
 	pinMode(SD_CMD_PIN, INPUT_PULLUP);
 
-	SD_OBJ.end();
-	
-	#ifndef USE_SD_MMC
-	  SPI.end();
-	#endif
+	SD.end();
+	SPI.end();
 
-	#if !defined(USE_SD_MMC) && !defined(DISABLE_SD_SWITCH)
-	  digitalWrite(SD_SWITCH_PIN,HIGH);
-	  delay(50);
-	#endif
+	digitalWrite(SD_SWITCH_PIN,HIGH);
+	delay(50);
 
 	_weTookBus = false;
 
@@ -227,7 +114,7 @@ bool SDControl::printerRequest() {
 
 void SDControl::deleteFile(String path)
 {
-  File file = SD_OBJ.open((char *)path.c_str());
+  File file = SD.open((char *)path.c_str());
   if(!file) {
     DEBUG_LOG("Open file fail\n");
     return;
@@ -235,7 +122,7 @@ void SDControl::deleteFile(String path)
   if (!file.isDirectory()) 
   {
     file.close();
-    SD_OBJ.remove((char *)path.c_str());
+    SD.remove((char *)path.c_str());
   }
 }
 
