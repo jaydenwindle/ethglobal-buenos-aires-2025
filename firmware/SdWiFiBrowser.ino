@@ -96,6 +96,7 @@ void exitSleepMode() {
     if (!serverStarted) {
       SPIFFS.begin();
       sdcontrol.setup();
+      sdcontrol.takeControl();  // Initialize SD card
       serverStarted = true;
     }
     network.startSoftAP();  // Start in AP mode
@@ -111,6 +112,125 @@ void exitSleepMode() {
   }
   
   SERIAL_ECHOLN("Device awake.");
+}
+
+void sendStatusReport() {
+  BT.write("=== Device Status ===\n");
+  
+  // Power & Performance (for brownout troubleshooting)
+  BT.write("--- Power & Performance ---\n");
+  
+  // CPU Frequency
+  BT.write("CPU Freq: ");
+  BT.write(String(getCpuFrequencyMhz()).c_str() + " Mhz\n");
+  
+  // Power Mode
+  BT.write("Power Mode: ");
+  BT.write(sleepMode ? "Sleep (80MHz)\n" : "Active (240MHz)\n");
+  
+  // WiFi Power Mode
+  if (wifiEnabled && WiFi.getMode() != WIFI_OFF) {
+    wifi_ps_type_t ps_type;
+    esp_wifi_get_ps(&ps_type);
+    BT.write("WiFi Power: ");
+    switch(ps_type) {
+      case WIFI_PS_NONE:
+        BT.write("Max Performance (High Power)\n");
+        break;
+      case WIFI_PS_MIN_MODEM:
+        BT.write("Min Modem (Power Save)\n");
+        break;
+      case WIFI_PS_MAX_MODEM:
+        BT.write("Max Modem (Max Power Save)\n");
+        break;
+      default:
+        BT.write("Unknown\n");
+    }
+  }
+  
+  BT.write("Bluetooth: Connected\n");
+  
+  // WiFi Status
+  BT.write("\n--- WiFi Status ---\n");
+  BT.write("WiFi: ");
+  if (wifiEnabled && WiFi.getMode() != WIFI_OFF) {
+    BT.write("ON\n");
+    BT.write("Mode: ");
+    BT.write(network.isSTAmode() ? "Station\n" : "Access Point\n");
+    
+    if (network.isSTAmode()) {
+      if (network.isConnected()) {
+        BT.write("Status: Connected\n");
+        BT.write("SSID: ");
+        BT.write(WiFi.SSID().c_str());
+        BT.write("\n");
+        BT.write("IP: ");
+        BT.write(WiFi.localIP().toString().c_str());
+        BT.write("\n");
+        BT.write("RSSI: ");
+        BT.write(String(WiFi.RSSI()).c_str());
+        BT.write(" dBm\n");
+      } else if (network.isConnecting()) {
+        BT.write("Status: Connecting...\n");
+      } else {
+        BT.write("Status: Disconnected\n");
+      }
+    } else {
+      BT.write("AP SSID: ");
+      BT.write(WiFi.SSID().c_str());
+      BT.write("\n");
+      BT.write("AP IP: ");
+      BT.write(WiFi.softAPIP().toString().c_str());
+      BT.write("\n");
+    }
+  } else {
+    BT.write("OFF\n");
+  }
+  
+  // SD Card Status
+  BT.write("\n--- SD Card ---\n");
+  BT.write("SD: ");
+  BT.write(sdcontrol.wehaveControl() ? "Active\n" : "Inactive\n");
+  
+  // Show stored credentials
+  BT.write("\n--- Stored Credentials ---\n");
+  char* stored_ssid = config.ssid();
+  char* stored_password = config.password();
+  
+  if (stored_ssid != NULL && strlen(stored_ssid) > 0) {
+    BT.write("Saved SSID: ");
+    BT.write(stored_ssid);
+    BT.write("\n");
+    
+    if (stored_password != NULL && strlen(stored_password) > 0) {
+      BT.write("Saved Password: ");
+      BT.write(stored_password);
+      BT.write("\n");
+    } else {
+      BT.write("Saved Password: (none)\n");
+    }
+  } else {
+    BT.write("No saved credentials\n");
+  }
+  
+  // Show AP credentials
+  char* ap_ssid = config.apSSID();
+  char* ap_password = config.apPassword();
+  
+  if (ap_ssid != NULL && strlen(ap_ssid) > 0) {
+    BT.write("AP SSID: ");
+    BT.write(ap_ssid);
+    BT.write("\n");
+    
+    if (ap_password != NULL && strlen(ap_password) > 0) {
+      BT.write("AP Password: ");
+      BT.write(ap_password);
+      BT.write("\n");
+    } else {
+      BT.write("AP Password: (open)\n");
+    }
+  }
+  BT.write("========================\n");
 }
 
 void handleBluetoothCommand(String cmd) {
@@ -129,12 +249,14 @@ void handleBluetoothCommand(String cmd) {
     return;
   }
   
-  // STATUS command also works in sleep mode (for power monitoring)
+  // STATUS command works in both sleep and awake modes
   if (cmd == "STATUS") {
-    // Handle STATUS below (don't return here)
+    sendStatusReport();
+    return;
   }
+  
   // If in sleep mode, only accept WAKE and STATUS commands
-  else if (sleepMode) {
+  if (sleepMode) {
     BT.write("Device is sleeping. Send 'WAKE' to wake up or 'STATUS' to check status.\n");
     return;
   }
@@ -155,135 +277,13 @@ void handleBluetoothCommand(String cmd) {
   else if (cmd == "SLEEP") {
     enterSleepMode();
   }
-  else if (cmd == "STATUS") {
-    BT.write("=== Device Status ===\n");
-    
-    // Power & Performance (for brownout troubleshooting)
-    BT.write("--- Power & Performance ---\n");
-    
-    // CPU Frequency
-    BT.write("CPU Freq: ");
-    BT.write(String(getCpuFrequencyMhz()).c_str());
-    BT.write(" MHz\n");
-    
-    // Voltage (if available - requires ADC reading)
-    // Note: ESP32 doesn't have built-in voltage monitoring without external circuit
-    // This would need to be added if you have voltage divider on ADC pin
-    
-    // Power Mode
-    BT.write("Power Mode: ");
-    BT.write(sleepMode ? "Sleep (80MHz)\n" : "Active (240MHz)\n");
-    
-    // WiFi Power Mode
-    if (wifiEnabled && WiFi.getMode() != WIFI_OFF) {
-      wifi_ps_type_t ps_type;
-      esp_wifi_get_ps(&ps_type);
-      BT.write("WiFi Power: ");
-      switch(ps_type) {
-        case WIFI_PS_NONE:
-          BT.write("Max Performance (High Power)\n");
-          break;
-        case WIFI_PS_MIN_MODEM:
-          BT.write("Min Modem (Power Save)\n");
-          break;
-        case WIFI_PS_MAX_MODEM:
-          BT.write("Max Modem (Max Power Save)\n");
-          break;
-        default:
-          BT.write("Unknown\n");
-      }
-    }
-    
-    BT.write("Bluetooth: Connected\n");
-    
-    // WiFi Status
-    BT.write("\n--- WiFi Status ---\n");
-    BT.write("WiFi: ");
-    if (wifiEnabled && WiFi.getMode() != WIFI_OFF) {
-      BT.write("ON\n");
-      BT.write("Mode: ");
-      BT.write(network.isSTAmode() ? "Station\n" : "Access Point\n");
-      
-      if (network.isSTAmode()) {
-        if (network.isConnected()) {
-          BT.write("Status: Connected\n");
-          BT.write("SSID: ");
-          BT.write(WiFi.SSID().c_str());
-          BT.write("\n");
-          BT.write("IP: ");
-          BT.write(WiFi.localIP().toString().c_str());
-          BT.write("\n");
-          BT.write("RSSI: ");
-          BT.write(String(WiFi.RSSI()).c_str());
-          BT.write(" dBm\n");
-        } else if (network.isConnecting()) {
-          BT.write("Status: Connecting...\n");
-        } else {
-          BT.write("Status: Disconnected\n");
-        }
-      } else {
-        BT.write("AP SSID: ");
-        BT.write(WiFi.SSID().c_str());
-        BT.write("\n");
-        BT.write("AP IP: ");
-        BT.write(WiFi.softAPIP().toString().c_str());
-        BT.write("\n");
-      }
-    } else {
-      BT.write("OFF\n");
-    }
-    
-    // SD Card Status
-    BT.write("\n--- SD Card ---\n");
-    BT.write("SD: ");
-    BT.write(sdcontrol.wehaveControl() ? "Active\n" : "Inactive\n");
-    
-    // Show stored credentials
-    BT.write("\n--- Stored Credentials ---\n");
-    char* stored_ssid = config.ssid();
-    char* stored_password = config.password();
-    
-    if (stored_ssid != NULL && strlen(stored_ssid) > 0) {
-      BT.write("Saved SSID: ");
-      BT.write(stored_ssid);
-      BT.write("\n");
-      
-      if (stored_password != NULL && strlen(stored_password) > 0) {
-        BT.write("Saved Password: ");
-        BT.write(stored_password);
-        BT.write("\n");
-      } else {
-        BT.write("Saved Password: (none)\n");
-      }
-    } else {
-      BT.write("No saved credentials\n");
-    }
-    
-    // Show AP credentials
-    char* ap_ssid = config.apSSID();
-    char* ap_password = config.apPassword();
-    
-    if (ap_ssid != NULL && strlen(ap_ssid) > 0) {
-      BT.write("AP SSID: ");
-      BT.write(ap_ssid);
-      BT.write("\n");
-      
-      if (ap_password != NULL && strlen(ap_password) > 0) {
-        BT.write("AP Password: ");
-        BT.write(ap_password);
-        BT.write("\n");
-      } else {
-        BT.write("AP Password: (open)\n");
-      }
-    }
-    BT.write("========================\n");
-  }
   else if (cmd == "WIFI ON") {
     if (!wifiEnabled || WiFi.getMode() == WIFI_OFF) {
       BT.write("Starting WiFi...\n");
       if (!serverStarted) {
         SPIFFS.begin();
         sdcontrol.setup();
+        sdcontrol.takeControl();  // Initialize SD card
         serverStarted = true;
       }
       network.start();
