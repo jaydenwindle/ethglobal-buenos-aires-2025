@@ -8,6 +8,16 @@
 #include <SPIFFS.h>
 #include <esp_pm.h>
 #include <esp_wifi.h>
+#include <SD.h>
+#include <SD_MMC.h>
+#include <ArduinoJson.h>
+
+// Define SD object based on mode
+#ifdef USE_SD_MMC
+  #define SD_OBJ SD_MMC
+#else
+  #define SD_OBJ SD
+#endif
 
 // Sleep mode state
 bool sleepMode = false;
@@ -155,6 +165,177 @@ void exitSleepMode() {
   SERIAL_ECHOLN("Device awake.");
 }
 
+// Queue management functions
+void handleQueueCommand() {
+  BT.write("[QUEUE] Starting queue check...\n");
+  
+  // Ensure SD card is available
+  if (!sdcontrol.wehaveControl()) {
+    BT.write("[QUEUE] SD card not initialized, setting up...\n");
+    
+    // Initialize SD control if not already done
+    if (!serverStarted) {
+      BT.write("[QUEUE] Running first-time SD setup...\n");
+      sdcontrol.setup();
+      delay(100);
+    }
+    
+    BT.write("[QUEUE] Taking SD card control...\n");
+    sdcontrol.takeControl();
+    delay(200); // Give SD card time to initialize
+    
+    if (!sdcontrol.wehaveControl()) {
+      BT.write("{\"error\":\"SD card not available - initialization failed\"}\n");
+      return;
+    }
+    BT.write("[QUEUE] SD card control acquired\n");
+  } else {
+    BT.write("[QUEUE] SD card already initialized\n");
+  }
+  
+  const char* queuePath = "/queue.txt";
+  const char* dcimPath = "/DCIM";
+  
+  // Check if DCIM folder exists
+  if (!SD_OBJ.exists(dcimPath)) {
+    BT.write("{\"error\":\"DCIM folder not found\"}\n");
+    return;
+  }
+  
+  // Get list of image files in DCIM (sorted by modification time)
+  File dcimDir = SD_OBJ.open(dcimPath);
+  if (!dcimDir || !dcimDir.isDirectory()) {
+    BT.write("{\"error\":\"Cannot open DCIM folder\"}\n");
+    return;
+  }
+  
+  // Collect all image files with their timestamps
+  struct ImageFile {
+    String name;
+    time_t modTime;
+  };
+  
+  std::vector<ImageFile> allImages;
+  File entry = dcimDir.openNextFile();
+  while (entry) {
+    if (!entry.isDirectory()) {
+      String filename = String(entry.name());
+      filename.toLowerCase();
+      // Check for image extensions
+      if (filename.endsWith(".jpg") || filename.endsWith(".jpeg") || 
+          filename.endsWith(".png") || filename.endsWith(".bmp")) {
+        ImageFile img;
+        img.name = String(entry.name());
+        img.modTime = entry.getLastWrite();
+        allImages.push_back(img);
+      }
+    }
+    entry.close();
+    entry = dcimDir.openNextFile();
+  }
+  dcimDir.close();
+  
+  // Sort by modification time (oldest first)
+  std::sort(allImages.begin(), allImages.end(), [](const ImageFile& a, const ImageFile& b) {
+    return a.modTime < b.modTime;
+  });
+  
+  BT.write("[QUEUE] Found ");
+  BT.write(String(allImages.size()).c_str());
+  BT.write(" images in DCIM\n");
+  
+  // Check if queue.txt exists
+  bool queueExists = SD_OBJ.exists(queuePath);
+  std::vector<String> queuedImages;
+  int addedCount = 0;
+  
+  if (queueExists) {
+    BT.write("[QUEUE] Reading existing queue.txt...\n");
+    // Read existing queue
+    File queueFile = SD_OBJ.open(queuePath, FILE_READ);
+    if (queueFile) {
+      while (queueFile.available()) {
+        String line = queueFile.readStringUntil('\n');
+        line.trim();
+        if (line.length() > 0) {
+          queuedImages.push_back(line);
+        }
+      }
+      queueFile.close();
+    }
+    
+    BT.write("[QUEUE] Existing queue has ");
+    BT.write(String(queuedImages.size()).c_str());
+    BT.write(" images\n");
+    
+    // Check for new images not in queue
+    for (const auto& img : allImages) {
+      bool inQueue = false;
+      for (const auto& queued : queuedImages) {
+        if (queued == img.name) {
+          inQueue = true;
+          break;
+        }
+      }
+      if (!inQueue) {
+        queuedImages.push_back(img.name);
+        addedCount++;
+      }
+    }
+    
+    if (addedCount > 0) {
+      BT.write("[QUEUE] Adding ");
+      BT.write(String(addedCount).c_str());
+      BT.write(" new images to queue\n");
+      
+      // Update queue.txt with new images
+      File queueFile = SD_OBJ.open(queuePath, FILE_WRITE);
+      if (queueFile) {
+        for (const auto& img : queuedImages) {
+          queueFile.println(img);
+        }
+        queueFile.close();
+      }
+    }
+  } else {
+    BT.write("[QUEUE] Creating new queue.txt with 5 oldest images...\n");
+    // Create new queue with 5 oldest images
+    int count = min(5, (int)allImages.size());
+    File queueFile = SD_OBJ.open(queuePath, FILE_WRITE);
+    if (queueFile) {
+      for (int i = 0; i < count; i++) {
+        queueFile.println(allImages[i].name);
+        queuedImages.push_back(allImages[i].name);
+      }
+      queueFile.close();
+      addedCount = count;
+    } else {
+      BT.write("{\"error\":\"Failed to create queue.txt\"}\n");
+      return;
+    }
+  }
+  
+  // Build JSON response
+  BT.write("{");
+  BT.write("\"count\":");
+  BT.write(String(queuedImages.size()).c_str());
+  BT.write(",\"added\":");
+  BT.write(String(addedCount).c_str());
+  BT.write(",\"images\":[");
+  
+  for (size_t i = 0; i < queuedImages.size(); i++) {
+    BT.write("\"");
+    BT.write(queuedImages[i].c_str());
+    BT.write("\"");
+    if (i < queuedImages.size() - 1) {
+      BT.write(",");
+    }
+  }
+  
+  BT.write("]}\n");
+  BT.write("[QUEUE] Complete\n");
+}
+
 void sendStatusReport() {
   BT.write("=== Device Status ===\n");
   
@@ -296,9 +477,67 @@ void handleBluetoothCommand(String cmd) {
     return;
   }
   
-  // If in sleep mode, only accept WAKE and STATUS commands
+  // QUEUE command works in both sleep and awake modes
+  if (cmd == "QUEUE") {
+    handleQueueCommand();
+    return;
+  }
+  
+  // SD ON command works in both sleep and awake modes
+  if (cmd == "SD ON") {
+    if (sdcontrol.wehaveControl()) {
+      BT.write("SD card already active\n");
+    } else {
+      BT.write("[SD ON] Initializing SD card...\n");
+      
+      // Setup SD pins if not done yet
+      if (!serverStarted) {
+        BT.write("[SD ON] First-time setup: configuring SD pins...\n");
+        sdcontrol.setup();
+        delay(100);
+        BT.write("[SD ON] SD pins configured\n");
+      }
+      
+      BT.write("[SD ON] Taking SD card control...\n");
+      sdcontrol.takeControl();
+      delay(200);
+      
+      if (sdcontrol.wehaveControl()) {
+        BT.write("[SD ON] SD card initialized successfully\n");
+        BT.write("SD card is now ACTIVE\n");
+      } else {
+        BT.write("[SD ON] ERROR: SD card initialization failed\n");
+        BT.write("Check:\n");
+        BT.write("  - SD card is inserted\n");
+        BT.write("  - SD card is formatted (FAT32)\n");
+        BT.write("  - Device has sufficient power\n");
+      }
+    }
+    return;
+  }
+  
+  // SD OFF command works in both sleep and awake modes
+  if (cmd == "SD OFF") {
+    if (!sdcontrol.wehaveControl()) {
+      BT.write("SD card already inactive\n");
+    } else {
+      BT.write("[SD OFF] Releasing SD card control...\n");
+      sdcontrol.relinquishControl();
+      delay(100);
+      
+      if (!sdcontrol.wehaveControl()) {
+        BT.write("[SD OFF] SD card released successfully\n");
+        BT.write("SD card is now INACTIVE\n");
+      } else {
+        BT.write("[SD OFF] WARNING: SD card may still be active\n");
+      }
+    }
+    return;
+  }
+  
+  // If in sleep mode, only accept WAKE, STATUS, QUEUE, and SD commands
   if (sleepMode) {
-    BT.write("Device is sleeping. Send 'WAKE' to wake up or 'STATUS' to check status.\n");
+    BT.write("Device is sleeping. Available commands: WAKE, STATUS, QUEUE, SD ON, SD OFF\n");
     return;
   }
   
@@ -306,6 +545,9 @@ void handleBluetoothCommand(String cmd) {
     BT.write("Available commands:\n");
     BT.write("  HELP - Show this help\n");
     BT.write("  STATUS - Show device status\n");
+    BT.write("  QUEUE - Check/update image processing queue\n");
+    BT.write("  SD ON - Initialize and mount SD card\n");
+    BT.write("  SD OFF - Unmount and release SD card\n");
     BT.write("  SLEEP - Enter low power sleep mode\n");
     BT.write("  WAKE - Wake from sleep mode\n");
     BT.write("  WIFI ON - Enable WiFi\n");
