@@ -1,0 +1,17 @@
+{
+  "name": "esp32-terminal",
+  "version": "1.0.0",
+  "description": "ESP32 Bluetooth & Serial Terminal",
+  "main": "esp32_terminal.js",
+  "scripts": {
+    "start": "node esp32_terminal.js"
+  },
+  "dependencies": {
+    "@abandonware/noble": "^1.9.2-15",
+    "blessed": "^0.1.81",
+    "node-pty": "^1.0.0"
+  },
+  "bin": {
+    "esp32-terminal": "./esp32_terminal.js"
+  }
+}

@@ -1,0 +1,405 @@
+#!/usr/bin/env node
+/**
+ * ESP32 Bluetooth & Serial Terminal
+ * Node.js version with blessed TUI
+ */
+
+const blessed = require('blessed');
+const noble = require('@abandonware/noble');
+const { spawn } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+const pty = require('node-pty');
+
+// BLE UART Service UUIDs
+const SERVICE_UUID = '6e400001b5a3f393e0a9e50e24dcca9e';
+const RX_UUID = '6e400002b5a3f393e0a9e50e24dcca9e';
+const TX_UUID = '6e400003b5a3f393e0a9e50e24dcca9e';
+
+const DEFAULT_DEVICE_NAME = 'digicam-001';
+
+class ESP32Terminal {
+  constructor(deviceName = DEFAULT_DEVICE_NAME) {
+    this.deviceName = deviceName;
+    this.blePeripheral = null;
+    this.bleCharacteristics = {};
+    this.serialProcess = null;
+    this.screen = null;
+    this.btLog = null;
+    this.serialLog = null;
+    this.input = null;
+    
+    // Log file setup
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('T')[0];
+    const logDir = path.join(__dirname, 'logs');
+    if (!fs.existsSync(logDir)) {
+      fs.mkdirSync(logDir, { recursive: true });
+    }
+    this.btLogFile = path.join(logDir, `bt_${timestamp}.txt`);
+    this.serialLogFile = path.join(logDir, `serial_${timestamp}.txt`);
+    
+    // Create log files
+    fs.writeFileSync(this.btLogFile, `ESP32 Bluetooth Log - ${new Date().toISOString()}\n${'='.repeat(60)}\n\n`);
+    fs.writeFileSync(this.serialLogFile, `ESP32 Serial Log - ${new Date().toISOString()}\n${'='.repeat(60)}\n\n`);
+  }
+
+  createUI() {
+    // Create screen
+    this.screen = blessed.screen({
+      smartCSR: true,
+      title: 'ESP32 Terminal',
+      mouse: true,  // Enable mouse support
+      sendFocus: true
+    });
+
+    // Header
+    const header = blessed.box({
+      top: 0,
+      left: 0,
+      width: '100%',
+      height: 3,
+      content: '{center}{bold}ESP32 Bluetooth & Serial Terminal{/bold}{/center}',
+      tags: true,
+      style: {
+        fg: 'white',
+        bg: 'blue',
+        bold: true
+      }
+    });
+
+    // Bluetooth log (left pane)
+    this.btLog = blessed.log({
+      top: 3,
+      left: 0,
+      width: '50%',
+      height: '100%-6',
+      border: { type: 'line' },
+      label: ' Bluetooth ',
+      tags: true,
+      scrollable: true,
+      alwaysScroll: true,
+      mouse: true,  // Enable mouse for this widget
+      keys: true,   // Enable keyboard scrolling
+      vi: true,     // Enable vi-style scrolling (j/k)
+      scrollbar: {
+        ch: ' ',
+        style: { bg: 'cyan' }
+      },
+      style: {
+        fg: 'cyan',
+        border: { fg: 'cyan' }
+      }
+    });
+
+    // Serial log (right pane)
+    this.serialLog = blessed.log({
+      top: 3,
+      left: '50%',
+      width: '50%',
+      height: '100%-6',
+      border: { type: 'line' },
+      label: ' Serial Monitor ',
+      tags: true,
+      scrollable: true,
+      alwaysScroll: true,
+      mouse: true,  // Enable mouse for this widget
+      keys: true,   // Enable keyboard scrolling
+      vi: true,     // Enable vi-style scrolling (j/k)
+      scrollbar: {
+        ch: ' ',
+        style: { bg: 'magenta' }
+      },
+      style: {
+        fg: 'white',
+        border: { fg: 'magenta' }
+      }
+    });
+
+    // Input box
+    this.input = blessed.textbox({
+      bottom: 0,
+      left: 0,
+      width: '100%',
+      height: 3,
+      border: { type: 'line' },
+      label: ' Command (type and press Enter, or "quit" to exit) ',
+      style: {
+        fg: 'white',
+        border: { fg: 'green' }
+      },
+      inputOnFocus: true
+    });
+
+    // Append to screen
+    this.screen.append(header);
+    this.screen.append(this.btLog);
+    this.screen.append(this.serialLog);
+    this.screen.append(this.input);
+
+    // Focus input
+    this.input.focus();
+
+    // Handle input submission
+    this.input.on('submit', (value) => {
+      const command = value.trim();
+      this.input.clearValue();
+      
+      if (command.toLowerCase() === 'quit' || command.toLowerCase() === 'exit' || command.toLowerCase() === 'q') {
+        this.exit();
+        return;
+      }
+      
+      if (command) {
+        this.sendBLECommand(command);
+      }
+      
+      this.input.focus();
+      this.screen.render();
+    });
+
+    // Quit on Escape, q, or Ctrl-C
+    this.screen.key(['escape', 'C-c', 'q'], (ch, key) => {
+      this.exit();
+    });
+
+    // Also bind to raw Ctrl-C
+    this.screen.key(['C-c'], (ch, key) => {
+      this.exit();
+    });
+
+    this.screen.render();
+  }
+
+  exit() {
+    // Destroy screen first to restore terminal
+    if (this.screen) {
+      this.screen.destroy();
+    }
+    this.cleanup();
+    process.exit(0);
+  }
+
+  async connectBluetooth() {
+    return new Promise((resolve, reject) => {
+      const timestamp = new Date().toLocaleTimeString();
+      const scanMsg = `[${timestamp}] Scanning for '${this.deviceName}'...`;
+      this.btLog.log(`{yellow-fg}${scanMsg}{/yellow-fg}`);
+      fs.appendFileSync(this.btLogFile, scanMsg + '\n');
+      this.screen.render();
+
+      const onDiscover = async (peripheral) => {
+        if (peripheral.advertisement.localName === this.deviceName) {
+          noble.stopScanning();
+          
+          const timestamp = new Date().toLocaleTimeString();
+          const foundMsg = `[${timestamp}] ✓ Found: ${peripheral.advertisement.localName}`;
+          this.btLog.log(`{green-fg}${foundMsg}{/green-fg}`);
+          fs.appendFileSync(this.btLogFile, foundMsg + '\n');
+          this.screen.render();
+
+          try {
+            await peripheral.connectAsync();
+            this.blePeripheral = peripheral;
+            
+            const { characteristics } = await peripheral.discoverSomeServicesAndCharacteristicsAsync(
+              [SERVICE_UUID],
+              [RX_UUID, TX_UUID]
+            );
+
+            characteristics.forEach(char => {
+              this.bleCharacteristics[char.uuid] = char;
+            });
+
+            // Subscribe to notifications
+            const txChar = this.bleCharacteristics[TX_UUID];
+            if (txChar) {
+              await txChar.subscribeAsync();
+              txChar.on('data', (data) => {
+                const message = data.toString('utf-8').trim();
+                if (message) {
+                  const timestamp = new Date().toLocaleTimeString();
+                  this.btLog.log(`{cyan-fg}[${timestamp}] ${message}{/cyan-fg}`);
+                  // Save to log file
+                  fs.appendFileSync(this.btLogFile, `[${timestamp}] ${message}\n`);
+                  this.screen.render();
+                }
+              });
+            }
+
+            const timestamp = new Date().toLocaleTimeString();
+            const connectedMsg = `[${timestamp}] ✓ Bluetooth connected!`;
+            this.btLog.log(`{green-fg}{bold}${connectedMsg}{/bold}{/green-fg}`);
+            fs.appendFileSync(this.btLogFile, connectedMsg + '\n');
+            this.screen.render();
+            resolve(true);
+          } catch (err) {
+            const timestamp = new Date().toLocaleTimeString();
+            const errorMsg = `[${timestamp}] ❌ Connection failed: ${err.message}`;
+            this.btLog.log(`{red-fg}${errorMsg}{/red-fg}`);
+            fs.appendFileSync(this.btLogFile, errorMsg + '\n');
+            this.screen.render();
+            reject(err);
+          }
+        }
+      };
+
+      noble.on('discover', onDiscover);
+      noble.startScanning([], false);
+
+      // Timeout after 10 seconds
+      setTimeout(() => {
+        noble.stopScanning();
+        noble.removeListener('discover', onDiscover);
+        const timestamp = new Date().toLocaleTimeString();
+        const timeoutMsg = `[${timestamp}] ❌ Device '${this.deviceName}' not found!`;
+        this.btLog.log(`{red-fg}${timeoutMsg}{/red-fg}`);
+        fs.appendFileSync(this.btLogFile, timeoutMsg + '\n');
+        this.screen.render();
+        reject(new Error('Device not found'));
+      }, 10000);
+    });
+  }
+
+  async sendBLECommand(command) {
+    if (!this.blePeripheral || !this.bleCharacteristics[RX_UUID]) {
+      const timestamp = new Date().toLocaleTimeString();
+      const msg = `[${timestamp}] Not connected!`;
+      this.btLog.log(`{red-fg}${msg}{/red-fg}`);
+      fs.appendFileSync(this.btLogFile, msg + '\n');
+      this.screen.render();
+      return;
+    }
+
+    try {
+      const timestamp = new Date().toLocaleTimeString();
+      const msg = `[${timestamp}] > ${command}`;
+      this.btLog.log(`{green-fg}${msg}{/green-fg}`);
+      fs.appendFileSync(this.btLogFile, msg + '\n');
+      
+      const rxChar = this.bleCharacteristics[RX_UUID];
+      await rxChar.writeAsync(Buffer.from(command, 'utf-8'), false);
+      
+      this.screen.render();
+    } catch (err) {
+      const timestamp = new Date().toLocaleTimeString();
+      const msg = `[${timestamp}] Error: ${err.message}`;
+      this.btLog.log(`{red-fg}${msg}{/red-fg}`);
+      fs.appendFileSync(this.btLogFile, msg + '\n');
+      this.screen.render();
+    }
+  }
+
+  startSerialMonitor() {
+    const timestamp = new Date().toLocaleTimeString();
+    const startMsg = `[${timestamp}] Starting platformio serial monitor...`;
+    this.serialLog.log(`{yellow-fg}${startMsg}{/yellow-fg}`);
+    fs.appendFileSync(this.serialLogFile, startMsg + '\n');
+    this.screen.render();
+
+    try {
+      // Use PTY to provide a pseudo-terminal for platformio
+      this.serialProcess = pty.spawn('platformio', ['device', 'monitor', '--baud', '115200'], {
+        name: 'xterm-color',
+        cols: 80,
+        rows: 30,
+        cwd: process.cwd(),
+        env: process.env
+      });
+
+      // Handle data from PTY
+      this.serialProcess.onData((data) => {
+        // Split by both \n and \r\n, and filter out \r
+        const lines = data.split(/\r?\n/);
+        lines.forEach(line => {
+          // Remove ANSI escape codes and carriage returns
+          const cleaned = line.replace(/\x1b\[[0-9;]*m/g, '').replace(/\r/g, '').trim();
+          if (cleaned && !cleaned.startsWith('---')) {
+            const timestamp = new Date().toLocaleTimeString();
+            this.serialLog.log(`{cyan-fg}[${timestamp}] ${cleaned}{/cyan-fg}`);
+            // Save to log file
+            fs.appendFileSync(this.serialLogFile, `[${timestamp}] ${cleaned}\n`);
+          }
+        });
+        this.screen.render();
+      });
+
+      this.serialProcess.onExit(({ exitCode, signal }) => {
+        const timestamp = new Date().toLocaleTimeString();
+        const msg = `[${timestamp}] Serial monitor stopped (exit code: ${exitCode}, signal: ${signal})`;
+        this.serialLog.log(`{yellow-fg}${msg}{/yellow-fg}`);
+        fs.appendFileSync(this.serialLogFile, msg + '\n');
+        this.screen.render();
+      });
+
+      const successTimestamp = new Date().toLocaleTimeString();
+      const successMsg = `[${successTimestamp}] ✓ Serial monitor started!`;
+      this.serialLog.log(`{green-fg}{bold}${successMsg}{/bold}{/green-fg}`);
+      fs.appendFileSync(this.serialLogFile, successMsg + '\n');
+      this.screen.render();
+    } catch (err) {
+      const timestamp = new Date().toLocaleTimeString();
+      const errorMsg = `[${timestamp}] ❌ Failed to start serial monitor: ${err.message}`;
+      this.serialLog.log(`{red-fg}${errorMsg}{/red-fg}`);
+      fs.appendFileSync(this.serialLogFile, errorMsg + '\n');
+      this.screen.render();
+    }
+  }
+
+  cleanup() {
+    if (this.serialProcess) {
+      try {
+        this.serialProcess.kill();
+      } catch (err) {
+        // Ignore errors on cleanup
+      }
+    }
+    if (this.blePeripheral) {
+      try {
+        this.blePeripheral.disconnect();
+      } catch (err) {
+        // Ignore errors on cleanup
+      }
+    }
+    
+    // Print log file locations
+    console.log('\nLogs saved to:');
+    console.log(`  Bluetooth: ${this.btLogFile}`);
+    console.log(`  Serial:    ${this.serialLogFile}`);
+  }
+
+  async start() {
+    this.createUI();
+    
+    try {
+      await this.connectBluetooth();
+      await this.sendBLECommand('HELP');
+    } catch (err) {
+      // Continue even if BT fails
+    }
+
+    this.startSerialMonitor();
+  }
+}
+
+// Main
+const deviceName = process.argv[2] || DEFAULT_DEVICE_NAME;
+const terminal = new ESP32Terminal(deviceName);
+
+// Handle Ctrl-C before blessed starts
+process.on('SIGINT', () => {
+  if (terminal.screen) {
+    terminal.exit();
+  } else {
+    process.exit(0);
+  }
+});
+
+process.on('SIGTERM', () => {
+  if (terminal.screen) {
+    terminal.exit();
+  } else {
+    process.exit(0);
+  }
+});
+
+terminal.start();

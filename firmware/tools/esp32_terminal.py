@@ -96,21 +96,25 @@ class ESP32Terminal(App):
         self.serial_log_widget = None
         self.input_widget = None
         
-        # Message queues for thread-safe logging
-        self.bt_message_queue = asyncio.Queue()
-        self.serial_message_queue = asyncio.Queue()
+        # Message queues for thread-safe logging (with max size to prevent unbounded growth)
+        self.bt_message_queue = asyncio.Queue(maxsize=100)
+        self.serial_message_queue = asyncio.Queue(maxsize=200)
         
         # Buffers for periodic updates (reduces render frequency)
         self.bt_buffer = []
         self.serial_buffer = []
+        
+        # Track user activity to pause rendering
+        self.user_typing = False
+        self.last_input_time = 0
         
     def compose(self) -> ComposeResult:
         """Create child widgets"""
         yield Header()
         with Vertical(id="logs_container"):
             with Horizontal():
-                yield RichLog(id="bt_log", highlight=True, markup=True, max_lines=1000)
-                yield RichLog(id="serial_log", highlight=True, markup=True, max_lines=1000)
+                yield RichLog(id="bt_log", highlight=False, markup=True, max_lines=100)
+                yield RichLog(id="serial_log", highlight=False, markup=False, max_lines=50)
         with Container(id="input_container"):
             yield Input(placeholder="Type command and press Enter (or 'quit' to exit)")
         yield Footer()
@@ -133,18 +137,17 @@ class ESP32Terminal(App):
         self.running = True
         asyncio.create_task(self.connect_devices())
         
-        # Start message collectors (collect messages into buffers)
-        asyncio.create_task(self.collect_bt_messages())
-        asyncio.create_task(self.collect_serial_messages())
-        
-        # Start periodic renderers (update UI on timer, not on every message)
-        self.set_interval(0.1, self.render_bt_buffer)  # Update BT every 100ms
-        self.set_interval(0.2, self.render_serial_buffer)  # Update Serial every 200ms
+        # Start direct message processors (no buffers, no timers)
+        asyncio.create_task(self.process_bt_messages_direct())
+        asyncio.create_task(self.process_serial_messages_direct())
     
     async def connect_devices(self):
         """Connect to Bluetooth and start serial monitor"""
         await self.connect_bluetooth()
-        self.start_serial_monitor()
+        # DISABLE SERIAL FOR NOW - it's fundamentally incompatible with Textual
+        # self.start_serial_monitor()
+        self.serial_log_widget.write("[yellow]Serial monitoring disabled due to performance issues[/]")
+        self.serial_log_widget.write("[dim]Run 'platformio device monitor --baud 115200' in a separate terminal[/]")
         
         if self.bt_connected:
             await self.send_command("HELP")
@@ -167,45 +170,40 @@ class ESP32Terminal(App):
                 self.loop
             )
     
-    async def collect_bt_messages(self):
-        """Collect Bluetooth messages into buffer without rendering"""
+    async def process_bt_messages_direct(self):
+        """Process BT messages with throttling"""
         while self.running:
             try:
                 message = await self.bt_message_queue.get()
-                self.bt_buffer.append(message)
-                # Limit buffer size
-                if len(self.bt_buffer) > 100:
-                    self.bt_buffer = self.bt_buffer[-100:]
+                self.bt_log_widget.write(message)
+                # Small delay to throttle
+                await asyncio.sleep(0.01)
             except Exception:
                 pass
     
-    async def collect_serial_messages(self):
-        """Collect Serial messages into buffer without rendering"""
+    async def process_serial_messages_direct(self):
+        """Process Serial messages with aggressive throttling"""
+        batch = []
         while self.running:
             try:
-                message = await self.serial_message_queue.get()
-                self.serial_buffer.append(message)
-                # Limit buffer size
-                if len(self.serial_buffer) > 100:
-                    self.serial_buffer = self.serial_buffer[-100:]
+                # Collect up to 20 messages
+                for _ in range(20):
+                    try:
+                        message = self.serial_message_queue.get_nowait()
+                        batch.append(message)
+                    except asyncio.QueueEmpty:
+                        break
+                
+                # Write batch if we have messages
+                if batch:
+                    for msg in batch:
+                        self.serial_log_widget.write(msg)
+                    batch = []
+                
+                # Wait longer between batches to reduce rendering
+                await asyncio.sleep(0.5)
             except Exception:
                 pass
-    
-    def render_bt_buffer(self):
-        """Render buffered BT messages (called on timer)"""
-        if self.bt_buffer:
-            with self.batch_update():
-                for msg in self.bt_buffer:
-                    self.bt_log_widget.write(msg)
-            self.bt_buffer = []
-    
-    def render_serial_buffer(self):
-        """Render buffered Serial messages (called on timer)"""
-        if self.serial_buffer:
-            with self.batch_update():
-                for msg in self.serial_buffer:
-                    self.serial_log_widget.write(msg)
-            self.serial_buffer = []
     
     async def connect_bluetooth(self):
         """Scan for and connect to ESP32 device via Bluetooth"""
@@ -233,22 +231,27 @@ class ESP32Terminal(App):
             return False
     
     def start_serial_monitor(self):
-        """Start platformio serial monitor"""
+        """Start platformio serial monitor - run in separate thread pool"""
         try:
             self.serial_log_widget.write("[yellow]Starting platformio serial monitor...[/]")
+            
+            # Use regular subprocess (not async) and read in thread pool executor
             self.serial_process = subprocess.Popen(
                 ['platformio', 'device', 'monitor', '--baud', '115200'],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                bufsize=1,
-                universal_newlines=True
+                bufsize=0  # Unbuffered
             )
+            
             self.serial_connected = True
             self.serial_log_widget.write("[green bold]✓ Serial monitor started![/]")
             
-            # Start reading in thread
-            serial_thread = threading.Thread(target=self.read_serial_thread, daemon=True)
-            serial_thread.start()
+            # Read in a completely separate thread using ThreadPoolExecutor
+            # This keeps it off the main event loop entirely
+            import concurrent.futures
+            self.serial_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            self.serial_executor.submit(self.read_serial_in_thread)
+            
             return True
         except FileNotFoundError:
             self.serial_log_widget.write("[red]❌ platformio not found. Install it first.[/]")
@@ -257,57 +260,28 @@ class ESP32Terminal(App):
             self.serial_log_widget.write(f"[red]❌ Failed to start serial monitor: {e}[/]")
             return False
     
-    def read_serial_thread(self):
-        """Read from platformio serial monitor in thread with throttling"""
-        import time
-        last_update = time.time()
-        buffer = []
-        
+    def read_serial_in_thread(self):
+        """Read serial in dedicated thread - completely isolated from event loop"""
         while self.running and self.serial_connected and self.serial_process:
             try:
                 line = self.serial_process.stdout.readline()
                 if line:
-                    message = line.rstrip('\n\r')
-                    if message and not message.startswith('---'):  # Skip platformio headers
-                        buffer.append(message)
-                        
-                        # Throttle: only send to queue every 100ms or when buffer has 20 lines
-                        current_time = time.time()
-                        if (current_time - last_update) >= 0.1 or len(buffer) >= 20:
-                            timestamp = datetime.now().strftime("%H:%M:%S")
-                            # Send all buffered lines as one message
-                            combined = "\n".join(buffer)
-                            asyncio.run_coroutine_threadsafe(
-                                self.serial_message_queue.put(f"[dim]{timestamp}[/] {combined}"),
-                                self.loop
-                            )
-                            buffer = []
-                            last_update = current_time
-                            
-                elif self.serial_process.poll() is not None:
-                    # Flush remaining buffer
-                    if buffer:
+                    message = line.decode('utf-8', errors='ignore').rstrip('\n\r')
+                    if message and not message.startswith('---'):
                         timestamp = datetime.now().strftime("%H:%M:%S")
-                        combined = "\n".join(buffer)
-                        asyncio.run_coroutine_threadsafe(
-                            self.serial_message_queue.put(f"[dim]{timestamp}[/] {combined}"),
-                            self.loop
-                        )
-                    
-                    # Process ended
+                        # Use call_from_thread to safely communicate with Textual
+                        try:
+                            self.call_from_thread(
+                                self.serial_message_queue.put_nowait,
+                                f"[dim]{timestamp}[/] {message}"
+                            )
+                        except:
+                            pass  # Queue full, drop message
+                else:
                     self.serial_connected = False
-                    timestamp = datetime.now().strftime("%H:%M:%S")
-                    asyncio.run_coroutine_threadsafe(
-                        self.serial_message_queue.put(f"[dim]{timestamp}[/] [yellow]Serial monitor stopped[/]"),
-                        self.loop
-                    )
                     break
-            except Exception as e:
-                timestamp = datetime.now().strftime("%H:%M:%S")
-                asyncio.run_coroutine_threadsafe(
-                    self.serial_message_queue.put(f"[dim]{timestamp}[/] [red]Error: {e}[/]"),
-                    self.loop
-                )
+            except Exception:
+                pass
     
     async def send_command(self, command):
         """Send command to ESP32 via Bluetooth"""
@@ -329,6 +303,11 @@ class ESP32Terminal(App):
             timestamp = datetime.now().strftime("%H:%M:%S")
             self.bt_log_widget.write(f"[dim]{timestamp}[/] [red]Error: {e}[/]")
             return False
+    
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """Track when user is typing"""
+        import time
+        self.last_input_time = time.time()
     
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle command submission"""
@@ -354,8 +333,8 @@ class ESP32Terminal(App):
         if self.serial_process and self.serial_connected:
             self.serial_process.terminate()
             try:
-                self.serial_process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
+                await asyncio.wait_for(self.serial_process.wait(), timeout=2)
+            except asyncio.TimeoutError:
                 self.serial_process.kill()
             self.serial_connected = False
     

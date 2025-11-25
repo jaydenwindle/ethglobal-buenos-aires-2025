@@ -1,1 +1,3 @@
 .pio
+node_modules
+logs
