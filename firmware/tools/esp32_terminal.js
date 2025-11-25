@@ -191,9 +191,18 @@ class ESP32Terminal {
       fs.appendFileSync(this.btLogFile, scanMsg + '\n');
       this.screen.render();
 
+      let connected = false;
+      let timeoutHandle = null;
+
       const onDiscover = async (peripheral) => {
         if (peripheral.advertisement.localName === this.deviceName) {
           noble.stopScanning();
+          
+          // Clear timeout since we found the device
+          if (timeoutHandle) {
+            clearTimeout(timeoutHandle);
+            timeoutHandle = null;
+          }
           
           const timestamp = new Date().toLocaleTimeString();
           const foundMsg = `[${timestamp}] ✓ Found: ${peripheral.advertisement.localName}`;
@@ -235,6 +244,9 @@ class ESP32Terminal {
             this.btLog.log(`{green-fg}{bold}${connectedMsg}{/bold}{/green-fg}`);
             fs.appendFileSync(this.btLogFile, connectedMsg + '\n');
             this.screen.render();
+            
+            connected = true;
+            noble.removeListener('discover', onDiscover);
             resolve(true);
           } catch (err) {
             const timestamp = new Date().toLocaleTimeString();
@@ -242,6 +254,8 @@ class ESP32Terminal {
             this.btLog.log(`{red-fg}${errorMsg}{/red-fg}`);
             fs.appendFileSync(this.btLogFile, errorMsg + '\n');
             this.screen.render();
+            
+            noble.removeListener('discover', onDiscover);
             reject(err);
           }
         }
@@ -251,15 +265,17 @@ class ESP32Terminal {
       noble.startScanning([], false);
 
       // Timeout after 10 seconds
-      setTimeout(() => {
-        noble.stopScanning();
-        noble.removeListener('discover', onDiscover);
-        const timestamp = new Date().toLocaleTimeString();
-        const timeoutMsg = `[${timestamp}] ❌ Device '${this.deviceName}' not found!`;
-        this.btLog.log(`{red-fg}${timeoutMsg}{/red-fg}`);
-        fs.appendFileSync(this.btLogFile, timeoutMsg + '\n');
-        this.screen.render();
-        reject(new Error('Device not found'));
+      timeoutHandle = setTimeout(() => {
+        if (!connected) {
+          noble.stopScanning();
+          noble.removeListener('discover', onDiscover);
+          const timestamp = new Date().toLocaleTimeString();
+          const timeoutMsg = `[${timestamp}] ❌ Device '${this.deviceName}' not found!`;
+          this.btLog.log(`{red-fg}${timeoutMsg}{/red-fg}`);
+          fs.appendFileSync(this.btLogFile, timeoutMsg + '\n');
+          this.screen.render();
+          reject(new Error('Device not found'));
+        }
       }, 10000);
     });
   }
