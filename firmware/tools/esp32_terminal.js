@@ -29,6 +29,10 @@ class ESP32Terminal {
     this.serialLog = null;
     this.input = null;
     
+    // Serial data buffer for handling \r properly
+    this.serialBuffer = '';
+    this.serialFlushTimer = null;
+    
     // Log file setup
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('T')[0];
     const logDir = path.join(__dirname, 'logs');
@@ -308,19 +312,52 @@ class ESP32Terminal {
 
       // Handle data from PTY
       this.serialProcess.onData((data) => {
-        // Split by both \n and \r\n, and filter out \r
-        const lines = data.split(/\r?\n/);
-        lines.forEach(line => {
-          // Remove ANSI escape codes and carriage returns
-          const cleaned = line.replace(/\x1b\[[0-9;]*m/g, '').replace(/\r/g, '').trim();
-          if (cleaned && !cleaned.startsWith('---')) {
+        // Remove ANSI escape codes first
+        const cleaned = data.replace(/\x1b\[[0-9;]*m/g, '');
+        
+        // Add to buffer
+        this.serialBuffer += cleaned;
+        
+        // Clear existing flush timer
+        if (this.serialFlushTimer) {
+          clearTimeout(this.serialFlushTimer);
+        }
+        
+        // Look for complete lines (ending with \n or \r\n)
+        let processedSomething = false;
+        while (this.serialBuffer.includes('\n')) {
+          const newlineIndex = this.serialBuffer.indexOf('\n');
+          let line = this.serialBuffer.substring(0, newlineIndex);
+          this.serialBuffer = this.serialBuffer.substring(newlineIndex + 1);
+          
+          // Remove any trailing \r
+          line = line.replace(/\r$/, '').trim();
+          
+          if (line && !line.startsWith('---')) {
             const timestamp = new Date().toLocaleTimeString();
-            this.serialLog.log(`{cyan-fg}[${timestamp}] ${cleaned}{/cyan-fg}`);
-            // Save to log file
-            fs.appendFileSync(this.serialLogFile, `[${timestamp}] ${cleaned}\n`);
+            this.serialLog.log(`{cyan-fg}[${timestamp}] ${line}{/cyan-fg}`);
+            fs.appendFileSync(this.serialLogFile, `[${timestamp}] ${line}\n`);
+            processedSomething = true;
           }
-        });
-        this.screen.render();
+        }
+        
+        // Set timer to flush incomplete buffer after 200ms of no new data
+        this.serialFlushTimer = setTimeout(() => {
+          if (this.serialBuffer.trim()) {
+            const line = this.serialBuffer.trim();
+            if (line && !line.startsWith('---')) {
+              const timestamp = new Date().toLocaleTimeString();
+              this.serialLog.log(`{cyan-fg}[${timestamp}] ${line}{/cyan-fg}`);
+              fs.appendFileSync(this.serialLogFile, `[${timestamp}] ${line}\n`);
+              this.screen.render();
+            }
+            this.serialBuffer = '';
+          }
+        }, 200);
+        
+        if (processedSomething) {
+          this.screen.render();
+        }
       });
 
       this.serialProcess.onExit(({ exitCode, signal }) => {
