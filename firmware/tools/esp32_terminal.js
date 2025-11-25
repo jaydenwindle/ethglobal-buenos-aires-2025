@@ -28,10 +28,20 @@ class ESP32Terminal {
     this.btLog = null;
     this.serialLog = null;
     this.input = null;
+    this.statusBox = null;
     
     // Serial data buffer for handling \r properly
     this.serialBuffer = '';
     this.serialFlushTimer = null;
+    
+    // ESP32 status data
+    this.esp32Status = {
+      power: 'Unknown',
+      wifi: 'Unknown',
+      ap: 'Unknown',
+      ip: 'Unknown',
+      lastUpdate: null
+    };
     
     // Log file setup
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('T')[0];
@@ -77,12 +87,27 @@ class ESP32Terminal {
       }
     });
 
-    // Bluetooth log (left pane)
-    this.btLog = blessed.log({
+    // Status panel
+    this.statusBox = blessed.box({
       top: 3,
       left: 0,
+      width: '100%',
+      height: 5,
+      border: { type: 'line' },
+      label: ' ESP32 Status ',
+      tags: true,
+      style: {
+        fg: 'white',
+        border: { fg: 'yellow' }
+      }
+    });
+
+    // Bluetooth log (left pane)
+    this.btLog = blessed.log({
+      top: 8,
+      left: 0,
       width: '50%',
-      height: '100%-6',
+      height: '100%-11',
       border: { type: 'line' },
       label: ' Bluetooth ',
       tags: true,
@@ -103,10 +128,10 @@ class ESP32Terminal {
 
     // Serial log (right pane)
     this.serialLog = blessed.log({
-      top: 3,
+      top: 8,
       left: '50%',
       width: '50%',
-      height: '100%-6',
+      height: '100%-11',
       border: { type: 'line' },
       label: ' Serial Monitor ',
       tags: true,
@@ -132,7 +157,7 @@ class ESP32Terminal {
       width: '100%',
       height: 3,
       border: { type: 'line' },
-      label: ' Command (type and press Enter, or "quit" to exit) ',
+      label: ' Command (type and press Enter, or "q/quit/esc/ctrl+c" to exit) ',
       style: {
         fg: 'white',
         border: { fg: 'green' }
@@ -142,9 +167,13 @@ class ESP32Terminal {
 
     // Append to screen
     this.screen.append(header);
+    this.screen.append(this.statusBox);
     this.screen.append(this.btLog);
     this.screen.append(this.serialLog);
     this.screen.append(this.input);
+    
+    // Initial status display
+    this.updateStatusDisplay();
 
     // Focus input
     this.input.focus();
@@ -178,6 +207,69 @@ class ESP32Terminal {
     });
 
     this.screen.render();
+  }
+
+  updateStatusDisplay() {
+    const status = this.esp32Status;
+    const lastUpdate = status.lastUpdate ? status.lastUpdate.toLocaleTimeString() : 'Never';
+    const btStatus = this.blePeripheral ? '{green-fg}Connected{/green-fg}' : '{red-fg}Disconnected{/red-fg}';
+    
+    const content = 
+      `  {yellow-fg}BLE:{/yellow-fg} ${btStatus}     ` +
+      `{yellow-fg}WiFi:{/yellow-fg} ${status.wifi}     ` +
+      `{yellow-fg}AP:{/yellow-fg} ${status.ap}\n` +
+      `  {yellow-fg}IP:{/yellow-fg} ${status.ip}     ` +
+      `{yellow-fg}Power:{/yellow-fg} ${status.power}     ` +
+      `{dim}Updated: ${lastUpdate}{/dim}`;
+    
+    this.statusBox.setContent(content);
+    this.screen.render();
+  }
+
+  parseStatusResponse(message) {
+    // Parse STATUS command responses to update status display
+    let updated = false;
+    
+    // WiFi status - look for "WiFi: ON/OFF" or "WiFi ON/OFF"
+    if (/wifi[:\s]+(on|off|enabled|disabled|connected)/i.test(message)) {
+      const match = message.match(/wifi[:\s]+(on|off|enabled|disabled|connected)/i);
+      if (match) {
+        this.esp32Status.wifi = match[1].toUpperCase();
+        updated = true;
+      }
+    }
+    
+    // AP/SSID - look for "AP: name" or "SSID: name"
+    if (/(?:ap|ssid)[:\s]+([^\s,\n]+)/i.test(message)) {
+      const match = message.match(/(?:ap|ssid)[:\s]+([^\s,\n]+)/i);
+      if (match) {
+        this.esp32Status.ap = match[1];
+        updated = true;
+      }
+    }
+    
+    // IP address
+    if (/ip[:\s]+([\d.]+)/i.test(message)) {
+      const match = message.match(/ip[:\s]+([\d.]+)/i);
+      if (match) {
+        this.esp32Status.ip = match[1];
+        updated = true;
+      }
+    }
+    
+    // Power/Battery/Voltage
+    if (/([\d.]+)\s*(v|mw|ma|mah|%)/i.test(message)) {
+      const match = message.match(/([\d.]+)\s*(v|mw|ma|mah|%)/i);
+      if (match) {
+        this.esp32Status.power = match[0];
+        updated = true;
+      }
+    }
+    
+    if (updated) {
+      this.esp32Status.lastUpdate = new Date();
+      this.updateStatusDisplay();
+    }
   }
 
   exit() {
@@ -240,6 +332,10 @@ class ESP32Terminal {
                   this.btLog.log(`{cyan-fg}[${timestamp}] ${message}{/cyan-fg}`);
                   // Save to log file
                   fs.appendFileSync(this.btLogFile, `[${timestamp}] ${message}\n`);
+                  
+                  // Parse for status information
+                  this.parseStatusResponse(message);
+                  
                   this.screen.render();
                 }
               });
@@ -249,6 +345,10 @@ class ESP32Terminal {
             const connectedMsg = `[${timestamp}] ✓ Bluetooth connected!`;
             this.btLog.log(`{green-fg}{bold}${connectedMsg}{/bold}{/green-fg}`);
             fs.appendFileSync(this.btLogFile, connectedMsg + '\n');
+            
+            // Update status display to show BLE connected
+            this.updateStatusDisplay();
+            
             this.screen.render();
             
             connected = true;
@@ -432,7 +532,6 @@ class ESP32Terminal {
     
     try {
       await this.connectBluetooth();
-      await this.sendBLECommand('HELP');
     } catch (err) {
       // Continue even if BT fails
     }
