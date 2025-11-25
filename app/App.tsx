@@ -6,12 +6,11 @@ import {
   Config,
 } from "@coinbase/cdp-hooks";
 import { StatusBar } from "expo-status-bar";
-import { StyleSheet, Text, View, Alert, SafeAreaView } from "react-native";
+import { StyleSheet, Text, View, Alert, SafeAreaView, TouchableOpacity } from "react-native";
 
 import { ThemeProvider, useTheme } from "./theme/ThemeContext";
 import { SignInForm } from "./components/SignInForm";
-import { DarkModeToggle } from "./components/DarkModeToggle";
-import { BLEDebugger } from "./components/BLEDebugger";
+import { MintPhotoScreen } from "./components/MintPhotoScreen";
 
 const cdpConfig = {
   projectId: process.env.EXPO_PUBLIC_CDP_PROJECT_ID,
@@ -110,6 +109,17 @@ function CDPApp() {
         alignItems: "center",
         marginBottom: 20,
       },
+      logoutButton: {
+        paddingHorizontal: 16,
+        paddingVertical: 8,
+        backgroundColor: colors.accent,
+        borderRadius: 6,
+      },
+      logoutButtonText: {
+        color: "#ffffff",
+        fontSize: 14,
+        fontWeight: "600",
+      },
     });
 
   const styles = createStyles();
@@ -130,9 +140,13 @@ function CDPApp() {
       <View style={styles.header}>
         <View style={styles.headerContent}>
           <View style={styles.headerText}>
-            <Text style={styles.title}>CDP React Native Demo</Text>
+            <Text style={styles.title}>📸 digicam.eth</Text>
           </View>
-          <DarkModeToggle style={{ width: 40, height: 40 }} />
+          {isSignedIn && (
+            <TouchableOpacity style={styles.logoutButton} onPress={handleSignOut}>
+              <Text style={styles.logoutButtonText}>Logout</Text>
+            </TouchableOpacity>
+          )}
         </View>
       </View>
 
@@ -140,7 +154,7 @@ function CDPApp() {
         {!isSignedIn ? (
           <SignInForm />
         ) : (
-          <BLEDebugger />
+          <MintPhotoScreen />
         )}
       </View>
 
