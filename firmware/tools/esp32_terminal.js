@@ -53,7 +53,13 @@ class ESP32Terminal {
       smartCSR: true,
       title: 'ESP32 Terminal',
       mouse: true,  // Enable mouse support
-      sendFocus: true
+      sendFocus: true,
+      warnings: true
+    });
+    
+    // Enable raw mode to capture all keys including Ctrl-C
+    this.screen.program.key('C-c', () => {
+      this.exit();
     });
 
     // Header
@@ -323,7 +329,8 @@ class ESP32Terminal {
         cols: 80,
         rows: 30,
         cwd: process.cwd(),
-        env: process.env
+        env: process.env,
+        handleFlowControl: false  // Don't let PTY handle Ctrl-C
       });
 
       // Handle data from PTY
@@ -438,8 +445,12 @@ class ESP32Terminal {
 const deviceName = process.argv[2] || DEFAULT_DEVICE_NAME;
 const terminal = new ESP32Terminal(deviceName);
 
-// Handle Ctrl-C before blessed starts
+// Handle Ctrl-C at process level
+let exiting = false;
 process.on('SIGINT', () => {
+  if (exiting) return;
+  exiting = true;
+  
   if (terminal.screen) {
     terminal.exit();
   } else {
@@ -448,11 +459,23 @@ process.on('SIGINT', () => {
 });
 
 process.on('SIGTERM', () => {
+  if (exiting) return;
+  exiting = true;
+  
   if (terminal.screen) {
     terminal.exit();
   } else {
     process.exit(0);
   }
+});
+
+// Catch uncaught exceptions
+process.on('uncaughtException', (err) => {
+  if (terminal.screen) {
+    terminal.screen.destroy();
+  }
+  console.error('Error:', err.message);
+  process.exit(1);
 });
 
 terminal.start();
