@@ -78,39 +78,80 @@ void enterSleepMode() {
 void exitSleepMode() {
   if (!sleepMode) return;
   
+  BT.write("[WAKE] Starting wake sequence...\n");
   SERIAL_ECHOLN("Waking from sleep mode...");
   
   // Restore normal power mode
+  BT.write("[WAKE] Restoring CPU to 240MHz...\n");
   esp_pm_config_esp32_t pm_config;
   pm_config.max_freq_mhz = 240;
   pm_config.min_freq_mhz = 240;
   pm_config.light_sleep_enable = false;
-  esp_pm_configure(&pm_config);
+  esp_err_t pm_result = esp_pm_configure(&pm_config);
+  if (pm_result == ESP_OK) {
+    BT.write("[WAKE] CPU frequency restored OK\n");
+  } else {
+    BT.write("[WAKE] ERROR: CPU frequency restore failed: ");
+    BT.write(String(pm_result).c_str());
+    BT.write("\n");
+  }
   
   sleepMode = false;
   lastActivityTime = millis();
+  BT.write("[WAKE] Sleep mode flag cleared\n");
   
   // Start WiFi and server if not already started
   if (!wifiEnabled || WiFi.getMode() == WIFI_OFF) {
+    BT.write("[WAKE] WiFi is OFF, starting initialization...\n");
     SERIAL_ECHOLN("Starting WiFi in AP mode...");
+    
     if (!serverStarted) {
-      SPIFFS.begin();
+      BT.write("[WAKE] First-time setup: Initializing SPIFFS...\n");
+      if (!SPIFFS.begin()) {
+        BT.write("[WAKE] ERROR: SPIFFS.begin() failed!\n");
+      } else {
+        BT.write("[WAKE] SPIFFS OK\n");
+      }
+      
+      BT.write("[WAKE] Setting up SD control pins...\n");
       sdcontrol.setup();
-      sdcontrol.takeControl();  // Initialize SD card
+      BT.write("[WAKE] SD pins configured\n");
+      
+      BT.write("[WAKE] Taking SD card control...\n");
+      sdcontrol.takeControl();
+      if (sdcontrol.wehaveControl()) {
+        BT.write("[WAKE] SD card initialized successfully\n");
+      } else {
+        BT.write("[WAKE] WARNING: SD card initialization may have failed\n");
+      }
+      
       serverStarted = true;
+      BT.write("[WAKE] Server started flag set\n");
+    } else {
+      BT.write("[WAKE] Server already initialized, skipping setup\n");
     }
-    network.startSoftAP();  // Start in AP mode
+    
+    BT.write("[WAKE] Starting WiFi AP...\n");
+    network.startSoftAP();
+    BT.write("[WAKE] AP start command sent\n");
+    
+    BT.write("[WAKE] Initializing web server...\n");
     server.begin(&SPIFFS);
+    BT.write("[WAKE] Web server initialized\n");
+    
     wifiEnabled = true;
     
     // Flag to send credentials after AP is confirmed running in main loop
     pendingCredentialsSend = true;
+    BT.write("[WAKE] Credentials will be sent after AP confirms running\n");
     SERIAL_ECHOLN("WiFi AP starting...");
   } else {
+    BT.write("[WAKE] WiFi already running\n");
     // WiFi already running, send credentials immediately
     sendAPCredentials();
   }
   
+  BT.write("[WAKE] Wake sequence complete!\n");
   SERIAL_ECHOLN("Device awake.");
 }
 
@@ -121,8 +162,8 @@ void sendStatusReport() {
   BT.write("--- Power & Performance ---\n");
   
   // CPU Frequency
-  BT.write("CPU Freq: ");
-  BT.write(String(getCpuFrequencyMhz()).c_str() + " Mhz\n");
+  BT.write("CPU Freq (MHz): ");
+  BT.write(String(getCpuFrequencyMhz()).c_str());
   
   // Power Mode
   BT.write("Power Mode: ");
