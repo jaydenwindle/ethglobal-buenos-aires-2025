@@ -100,13 +100,17 @@ class ESP32Terminal(App):
         self.bt_message_queue = asyncio.Queue()
         self.serial_message_queue = asyncio.Queue()
         
+        # Buffers for periodic updates (reduces render frequency)
+        self.bt_buffer = []
+        self.serial_buffer = []
+        
     def compose(self) -> ComposeResult:
         """Create child widgets"""
         yield Header()
         with Vertical(id="logs_container"):
             with Horizontal():
-                yield RichLog(id="bt_log", highlight=True, markup=True)
-                yield RichLog(id="serial_log", highlight=True, markup=True)
+                yield RichLog(id="bt_log", highlight=True, markup=True, max_lines=1000)
+                yield RichLog(id="serial_log", highlight=True, markup=True, max_lines=1000)
         with Container(id="input_container"):
             yield Input(placeholder="Type command and press Enter (or 'quit' to exit)")
         yield Footer()
@@ -129,9 +133,13 @@ class ESP32Terminal(App):
         self.running = True
         asyncio.create_task(self.connect_devices())
         
-        # Start message processors
-        asyncio.create_task(self.process_bt_messages())
-        asyncio.create_task(self.process_serial_messages())
+        # Start message collectors (collect messages into buffers)
+        asyncio.create_task(self.collect_bt_messages())
+        asyncio.create_task(self.collect_serial_messages())
+        
+        # Start periodic renderers (update UI on timer, not on every message)
+        self.set_interval(0.1, self.render_bt_buffer)  # Update BT every 100ms
+        self.set_interval(0.2, self.render_serial_buffer)  # Update Serial every 200ms
     
     async def connect_devices(self):
         """Connect to Bluetooth and start serial monitor"""
@@ -146,36 +154,58 @@ class ESP32Terminal(App):
         try:
             message = data.decode('utf-8').rstrip('\n\r')
             if message:
-                timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                timestamp = datetime.now().strftime("%H:%M:%S")
                 # Queue message for processing in main loop
                 asyncio.run_coroutine_threadsafe(
                     self.bt_message_queue.put(f"[dim]{timestamp}[/] {message}"),
                     self.loop
                 )
         except UnicodeDecodeError:
-            timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            timestamp = datetime.now().strftime("%H:%M:%S")
             asyncio.run_coroutine_threadsafe(
                 self.bt_message_queue.put(f"[dim]{timestamp}[/] [yellow][Binary: {data.hex()}][/]"),
                 self.loop
             )
     
-    async def process_bt_messages(self):
-        """Process Bluetooth messages from queue"""
+    async def collect_bt_messages(self):
+        """Collect Bluetooth messages into buffer without rendering"""
         while self.running:
             try:
                 message = await self.bt_message_queue.get()
-                self.bt_log_widget.write(message)
-            except Exception as e:
+                self.bt_buffer.append(message)
+                # Limit buffer size
+                if len(self.bt_buffer) > 100:
+                    self.bt_buffer = self.bt_buffer[-100:]
+            except Exception:
                 pass
     
-    async def process_serial_messages(self):
-        """Process Serial messages from queue"""
+    async def collect_serial_messages(self):
+        """Collect Serial messages into buffer without rendering"""
         while self.running:
             try:
                 message = await self.serial_message_queue.get()
-                self.serial_log_widget.write(message)
-            except Exception as e:
+                self.serial_buffer.append(message)
+                # Limit buffer size
+                if len(self.serial_buffer) > 100:
+                    self.serial_buffer = self.serial_buffer[-100:]
+            except Exception:
                 pass
+    
+    def render_bt_buffer(self):
+        """Render buffered BT messages (called on timer)"""
+        if self.bt_buffer:
+            with self.batch_update():
+                for msg in self.bt_buffer:
+                    self.bt_log_widget.write(msg)
+            self.bt_buffer = []
+    
+    def render_serial_buffer(self):
+        """Render buffered Serial messages (called on timer)"""
+        if self.serial_buffer:
+            with self.batch_update():
+                for msg in self.serial_buffer:
+                    self.serial_log_widget.write(msg)
+            self.serial_buffer = []
     
     async def connect_bluetooth(self):
         """Scan for and connect to ESP32 device via Bluetooth"""
@@ -228,29 +258,52 @@ class ESP32Terminal(App):
             return False
     
     def read_serial_thread(self):
-        """Read from platformio serial monitor in thread"""
+        """Read from platformio serial monitor in thread with throttling"""
+        import time
+        last_update = time.time()
+        buffer = []
+        
         while self.running and self.serial_connected and self.serial_process:
             try:
                 line = self.serial_process.stdout.readline()
                 if line:
                     message = line.rstrip('\n\r')
                     if message and not message.startswith('---'):  # Skip platformio headers
-                        timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                        buffer.append(message)
+                        
+                        # Throttle: only send to queue every 100ms or when buffer has 20 lines
+                        current_time = time.time()
+                        if (current_time - last_update) >= 0.1 or len(buffer) >= 20:
+                            timestamp = datetime.now().strftime("%H:%M:%S")
+                            # Send all buffered lines as one message
+                            combined = "\n".join(buffer)
+                            asyncio.run_coroutine_threadsafe(
+                                self.serial_message_queue.put(f"[dim]{timestamp}[/] {combined}"),
+                                self.loop
+                            )
+                            buffer = []
+                            last_update = current_time
+                            
+                elif self.serial_process.poll() is not None:
+                    # Flush remaining buffer
+                    if buffer:
+                        timestamp = datetime.now().strftime("%H:%M:%S")
+                        combined = "\n".join(buffer)
                         asyncio.run_coroutine_threadsafe(
-                            self.serial_message_queue.put(f"[dim]{timestamp}[/] {message}"),
+                            self.serial_message_queue.put(f"[dim]{timestamp}[/] {combined}"),
                             self.loop
                         )
-                elif self.serial_process.poll() is not None:
+                    
                     # Process ended
                     self.serial_connected = False
-                    timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                    timestamp = datetime.now().strftime("%H:%M:%S")
                     asyncio.run_coroutine_threadsafe(
                         self.serial_message_queue.put(f"[dim]{timestamp}[/] [yellow]Serial monitor stopped[/]"),
                         self.loop
                     )
                     break
             except Exception as e:
-                timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                timestamp = datetime.now().strftime("%H:%M:%S")
                 asyncio.run_coroutine_threadsafe(
                     self.serial_message_queue.put(f"[dim]{timestamp}[/] [red]Error: {e}[/]"),
                     self.loop
@@ -259,12 +312,12 @@ class ESP32Terminal(App):
     async def send_command(self, command):
         """Send command to ESP32 via Bluetooth"""
         if not self.bt_connected or not self.client:
-            timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            timestamp = datetime.now().strftime("%H:%M:%S")
             self.bt_log_widget.write(f"[dim]{timestamp}[/] [red]Not connected![/]")
             return False
         
         try:
-            timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            timestamp = datetime.now().strftime("%H:%M:%S")
             self.bt_log_widget.write(f"[dim]{timestamp}[/] [green]> {command}[/]")
             await self.client.write_gatt_char(RX_UUID, command.encode('utf-8'))
             
@@ -273,11 +326,11 @@ class ESP32Terminal(App):
             
             return True
         except Exception as e:
-            timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            timestamp = datetime.now().strftime("%H:%M:%S")
             self.bt_log_widget.write(f"[dim]{timestamp}[/] [red]Error: {e}[/]")
             return False
     
-    async def on_input_submitted(self, event: Input.Submitted) -> None:
+    def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle command submission"""
         command = event.value.strip()
         self.input_widget.value = ""
