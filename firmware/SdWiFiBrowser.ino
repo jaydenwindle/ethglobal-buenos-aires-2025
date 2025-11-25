@@ -129,9 +129,13 @@ void handleBluetoothCommand(String cmd) {
     return;
   }
   
-  // If in sleep mode, only accept WAKE command
-  if (sleepMode) {
-    BT.write("Device is sleeping. Send 'WAKE' to wake up.\n");
+  // STATUS command also works in sleep mode (for power monitoring)
+  if (cmd == "STATUS") {
+    // Handle STATUS below (don't return here)
+  }
+  // If in sleep mode, only accept WAKE and STATUS commands
+  else if (sleepMode) {
+    BT.write("Device is sleeping. Send 'WAKE' to wake up or 'STATUS' to check status.\n");
     return;
   }
   
@@ -153,20 +157,57 @@ void handleBluetoothCommand(String cmd) {
   }
   else if (cmd == "STATUS") {
     BT.write("=== Device Status ===\n");
+    
+    // Power & Performance (for brownout troubleshooting)
+    BT.write("--- Power & Performance ---\n");
+    
+    // CPU Frequency
+    BT.write("CPU Freq: ");
+    BT.write(String(getCpuFrequencyMhz()).c_str());
+    BT.write(" MHz\n");
+    
+    // Voltage (if available - requires ADC reading)
+    // Note: ESP32 doesn't have built-in voltage monitoring without external circuit
+    // This would need to be added if you have voltage divider on ADC pin
+    
+    // Power Mode
     BT.write("Power Mode: ");
-    BT.write(sleepMode ? "Sleep\n" : "Active\n");
+    BT.write(sleepMode ? "Sleep (80MHz)\n" : "Active (240MHz)\n");
+    
+    // WiFi Power Mode
+    if (wifiEnabled && WiFi.getMode() != WIFI_OFF) {
+      wifi_ps_type_t ps_type;
+      esp_wifi_get_ps(&ps_type);
+      BT.write("WiFi Power: ");
+      switch(ps_type) {
+        case WIFI_PS_NONE:
+          BT.write("Max Performance (High Power)\n");
+          break;
+        case WIFI_PS_MIN_MODEM:
+          BT.write("Min Modem (Power Save)\n");
+          break;
+        case WIFI_PS_MAX_MODEM:
+          BT.write("Max Modem (Max Power Save)\n");
+          break;
+        default:
+          BT.write("Unknown\n");
+      }
+    }
+    
     BT.write("Bluetooth: Connected\n");
     
-    BT.write("\nWiFi: ");
+    // WiFi Status
+    BT.write("\n--- WiFi Status ---\n");
+    BT.write("WiFi: ");
     if (wifiEnabled && WiFi.getMode() != WIFI_OFF) {
-      BT.write("Enabled\n");
+      BT.write("ON\n");
       BT.write("Mode: ");
       BT.write(network.isSTAmode() ? "Station\n" : "Access Point\n");
       
       if (network.isSTAmode()) {
         if (network.isConnected()) {
           BT.write("Status: Connected\n");
-          BT.write("Current SSID: ");
+          BT.write("SSID: ");
           BT.write(WiFi.SSID().c_str());
           BT.write("\n");
           BT.write("IP: ");
@@ -189,8 +230,13 @@ void handleBluetoothCommand(String cmd) {
         BT.write("\n");
       }
     } else {
-      BT.write("Disabled\n");
+      BT.write("OFF\n");
     }
+    
+    // SD Card Status
+    BT.write("\n--- SD Card ---\n");
+    BT.write("SD: ");
+    BT.write(sdcontrol.wehaveControl() ? "Active\n" : "Inactive\n");
     
     // Show stored credentials
     BT.write("\n--- Stored Credentials ---\n");

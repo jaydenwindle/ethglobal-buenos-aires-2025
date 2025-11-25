@@ -36,10 +36,15 @@ class ESP32Terminal {
     
     // ESP32 status data
     this.esp32Status = {
-      power: 'Unknown',
+      voltage: 'Unknown',
+      current: 'Unknown',
+      cpuFreq: 'Unknown',
+      wifiPower: 'Unknown',
       wifi: 'Unknown',
       ap: 'Unknown',
       ip: 'Unknown',
+      sleep: 'Awake',
+      sdCard: 'Unknown',
       lastUpdate: null
     };
     
@@ -87,14 +92,14 @@ class ESP32Terminal {
       }
     });
 
-    // Status panel
+    // Status panel - taller for more info
     this.statusBox = blessed.box({
       top: 3,
       left: 0,
       width: '100%',
-      height: 5,
+      height: 7,
       border: { type: 'line' },
-      label: ' ESP32 Status ',
+      label: ' ESP32 Status (Power & Performance) ',
       tags: true,
       style: {
         fg: 'white',
@@ -104,10 +109,10 @@ class ESP32Terminal {
 
     // Bluetooth log (left pane)
     this.btLog = blessed.log({
-      top: 8,
+      top: 10,
       left: 0,
       width: '50%',
-      height: '100%-11',
+      height: '100%-13',
       border: { type: 'line' },
       label: ' Bluetooth ',
       tags: true,
@@ -128,10 +133,10 @@ class ESP32Terminal {
 
     // Serial log (right pane)
     this.serialLog = blessed.log({
-      top: 8,
+      top: 10,
       left: '50%',
       width: '50%',
-      height: '100%-11',
+      height: '100%-13',
       border: { type: 'line' },
       label: ' Serial Monitor ',
       tags: true,
@@ -213,14 +218,23 @@ class ESP32Terminal {
     const status = this.esp32Status;
     const lastUpdate = status.lastUpdate ? status.lastUpdate.toLocaleTimeString() : 'Never';
     const btStatus = this.blePeripheral ? '{green-fg}Connected{/green-fg}' : '{red-fg}Disconnected{/red-fg}';
+    const sleepStatus = status.sleep === 'Sleeping' ? '{yellow-fg}Sleeping{/yellow-fg}' : '{green-fg}Awake{/green-fg}';
+    
+    // Highlight low voltage in red (brownout warning)
+    const voltageColor = status.voltage !== 'Unknown' && parseFloat(status.voltage) < 3.0 ? 'red-fg' : 'white';
     
     const content = 
       `  {yellow-fg}BLE:{/yellow-fg} ${btStatus}     ` +
+      `{yellow-fg}State:{/yellow-fg} ${sleepStatus}     ` +
+      `{yellow-fg}Voltage:{/yellow-fg} {${voltageColor}}${status.voltage}{/${voltageColor}}     ` +
+      `{yellow-fg}Current:{/yellow-fg} ${status.current}\n` +
+      `  {yellow-fg}CPU Freq:{/yellow-fg} ${status.cpuFreq}     ` +
+      `{yellow-fg}WiFi Power:{/yellow-fg} ${status.wifiPower}     ` +
       `{yellow-fg}WiFi:{/yellow-fg} ${status.wifi}     ` +
-      `{yellow-fg}AP:{/yellow-fg} ${status.ap}\n` +
-      `  {yellow-fg}IP:{/yellow-fg} ${status.ip}     ` +
-      `{yellow-fg}Power:{/yellow-fg} ${status.power}     ` +
-      `{dim}Updated: ${lastUpdate}{/dim}`;
+      `{yellow-fg}SD Card:{/yellow-fg} ${status.sdCard}\n` +
+      `  {yellow-fg}AP:{/yellow-fg} ${status.ap}     ` +
+      `{yellow-fg}IP:{/yellow-fg} ${status.ip}     ` +
+      `{gray-fg}Updated: ${lastUpdate}{/gray-fg}`;
     
     this.statusBox.setContent(content);
     this.screen.render();
@@ -229,6 +243,65 @@ class ESP32Terminal {
   parseStatusResponse(message) {
     // Parse STATUS command responses to update status display
     let updated = false;
+    const lowerMsg = message.toLowerCase();
+    
+    // Sleep status - "zzz" or "sleeping"
+    if (lowerMsg.includes('zzz') || lowerMsg.includes('sleeping') || lowerMsg.includes('entering sleep')) {
+      this.esp32Status.sleep = 'Sleeping';
+      updated = true;
+    }
+    
+    // Wake status - look for AP credentials or wake messages
+    if (lowerMsg.includes('wake') || lowerMsg.includes('waking') || lowerMsg.includes('awake') || 
+        (lowerMsg.includes('ap:') && lowerMsg.includes('pass:'))) {
+      this.esp32Status.sleep = 'Awake';
+      updated = true;
+    }
+    
+    // Voltage (critical for brownout detection)
+    if (/voltage[:\s]*([\d.]+)\s*v/i.test(message) || /^([\d.]+)\s*v$/i.test(message.trim())) {
+      const match = message.match(/(?:voltage[:\s]*)?([\d.]+)\s*v/i);
+      if (match) {
+        this.esp32Status.voltage = `${match[1]}V`;
+        updated = true;
+      }
+    }
+    
+    // Current draw
+    if (/([\d.]+)\s*ma/i.test(message)) {
+      const match = message.match(/([\d.]+)\s*ma/i);
+      if (match) {
+        this.esp32Status.current = `${match[1]}mA`;
+        updated = true;
+      }
+    }
+    
+    // CPU Frequency
+    if (/cpu[:\s]*([\d]+)\s*mhz/i.test(message) || /freq[:\s]*([\d]+)\s*mhz/i.test(message)) {
+      const match = message.match(/(?:cpu|freq)[:\s]*([\d]+)\s*mhz/i);
+      if (match) {
+        this.esp32Status.cpuFreq = `${match[1]}MHz`;
+        updated = true;
+      }
+    }
+    
+    // WiFi Power Mode
+    if (/wifi\s*power[:\s]*([\w]+)/i.test(message) || /power\s*save[:\s]*(on|off)/i.test(message)) {
+      const match = message.match(/(?:wifi\s*power|power\s*save)[:\s]*([\w]+)/i);
+      if (match) {
+        this.esp32Status.wifiPower = match[1].toUpperCase();
+        updated = true;
+      }
+    }
+    
+    // SD Card status
+    if (/sd[:\s]*([\w]+)/i.test(message) || lowerMsg.includes('sd card')) {
+      const match = message.match(/sd[:\s]*([\w]+)/i);
+      if (match) {
+        this.esp32Status.sdCard = match[1].toUpperCase();
+        updated = true;
+      }
+    }
     
     // WiFi status - look for "WiFi: ON/OFF" or "WiFi ON/OFF"
     if (/wifi[:\s]+(on|off|enabled|disabled|connected)/i.test(message)) {
@@ -239,10 +312,10 @@ class ESP32Terminal {
       }
     }
     
-    // AP/SSID - look for "AP: name" or "SSID: name"
-    if (/(?:ap|ssid)[:\s]+([^\s,\n]+)/i.test(message)) {
-      const match = message.match(/(?:ap|ssid)[:\s]+([^\s,\n]+)/i);
-      if (match) {
+    // AP/SSID - look for "AP: name" or "SSID: name" (but not "Pass:")
+    if (/(?:^|\s)(?:ap|ssid)[:\s]+([^\s,\n]+)/i.test(message) && !lowerMsg.includes('pass:')) {
+      const match = message.match(/(?:^|\s)(?:ap|ssid)[:\s]+([^\s,\n]+)/i);
+      if (match && match[1].toLowerCase() !== 'mode') {
         this.esp32Status.ap = match[1];
         updated = true;
       }
@@ -257,18 +330,12 @@ class ESP32Terminal {
       }
     }
     
-    // Power/Battery/Voltage
-    if (/([\d.]+)\s*(v|mw|ma|mah|%)/i.test(message)) {
-      const match = message.match(/([\d.]+)\s*(v|mw|ma|mah|%)/i);
-      if (match) {
-        this.esp32Status.power = match[0];
-        updated = true;
-      }
-    }
-    
     if (updated) {
       this.esp32Status.lastUpdate = new Date();
-      this.updateStatusDisplay();
+      // Use setImmediate to ensure status updates after current render cycle
+      setImmediate(() => {
+        this.updateStatusDisplay();
+      });
     }
   }
 
@@ -333,10 +400,8 @@ class ESP32Terminal {
                   // Save to log file
                   fs.appendFileSync(this.btLogFile, `[${timestamp}] ${message}\n`);
                   
-                  // Parse for status information
+                  // Parse for status information (will trigger its own render)
                   this.parseStatusResponse(message);
-                  
-                  this.screen.render();
                 }
               });
             }
