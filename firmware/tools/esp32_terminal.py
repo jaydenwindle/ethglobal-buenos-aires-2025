@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-ESP32 Bluetooth Terminal
-Simple interactive terminal for ESP32-SD-WiFi device
+ESP32 Bluetooth & Serial Terminal
+Interactive terminal for ESP32-SD-WiFi device with dual monitoring
 
 Requirements:
-    pip install bleak
+    pip install bleak textual
+    platformio (for serial monitoring)
 
 Usage:
     python esp32_terminal.py [device_name]
@@ -30,144 +31,294 @@ Commands:
 
 import asyncio
 import sys
+import subprocess
+import threading
+from datetime import datetime
+from collections import deque
 from bleak import BleakClient, BleakScanner
+from textual.app import App, ComposeResult
+from textual.containers import Container, Horizontal, Vertical
+from textual.widgets import Header, Footer, Static, Input, RichLog
+from textual.binding import Binding
 
 # BLE UART Service UUIDs
 SERVICE_UUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
 RX_UUID = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"  # Write to ESP32
 TX_UUID = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"  # Receive from ESP32
 
-# Default device name (can be overridden by command line argument)
+# Defaults
 DEFAULT_DEVICE_NAME = "digicam-001"
+DEFAULT_BAUD_RATE = 115200
+MAX_LOG_LINES = 500
 
-class ESP32Terminal:
+class ESP32Terminal(App):
+    """Textual app for ESP32 terminal"""
+    
+    CSS = """
+    #bt_log {
+        border: solid cyan;
+        height: 100%;
+    }
+    
+    #serial_log {
+        border: solid magenta;
+        height: 100%;
+    }
+    
+    #logs_container {
+        height: 1fr;
+    }
+    
+    #input_container {
+        height: auto;
+        padding: 1;
+    }
+    """
+    
+    BINDINGS = [
+        Binding("ctrl+c", "quit", "Quit"),
+    ]
+    
     def __init__(self, device_name=DEFAULT_DEVICE_NAME):
+        super().__init__()
+        # Bluetooth
         self.client = None
-        self.connected = False
+        self.bt_connected = False
         self.device_name = device_name
         
-    def notification_handler(self, sender, data):
-        """Handle incoming data from ESP32"""
-        try:
-            message = data.decode('utf-8')
-            print(message, end='')
-        except UnicodeDecodeError:
-            print(f"[Binary data: {data.hex()}]")
+        # Serial (via platformio)
+        self.serial_process = None
+        self.serial_connected = False
+        
+        # UI state
+        self.running = False
+        self.bt_log_widget = None
+        self.serial_log_widget = None
+        self.input_widget = None
+        
+        # Message queues for thread-safe logging
+        self.bt_message_queue = asyncio.Queue()
+        self.serial_message_queue = asyncio.Queue()
+        
+    def compose(self) -> ComposeResult:
+        """Create child widgets"""
+        yield Header()
+        with Vertical(id="logs_container"):
+            with Horizontal():
+                yield RichLog(id="bt_log", highlight=True, markup=True)
+                yield RichLog(id="serial_log", highlight=True, markup=True)
+        with Container(id="input_container"):
+            yield Input(placeholder="Type command and press Enter (or 'quit' to exit)")
+        yield Footer()
     
-    async def connect(self):
-        """Scan for and connect to ESP32 device"""
-        print(f"Scanning for '{self.device_name}'...")
+    def on_mount(self) -> None:
+        """Called when app starts"""
+        self.bt_log_widget = self.query_one("#bt_log", RichLog)
+        self.serial_log_widget = self.query_one("#serial_log", RichLog)
+        self.input_widget = self.query_one(Input)
+        
+        self.bt_log_widget.border_title = "Bluetooth"
+        self.serial_log_widget.border_title = "Serial Monitor"
+        
+        self.input_widget.focus()
+        
+        # Get event loop for thread-safe operations
+        self.loop = asyncio.get_event_loop()
+        
+        # Start connections
+        self.running = True
+        asyncio.create_task(self.connect_devices())
+        
+        # Start message processors
+        asyncio.create_task(self.process_bt_messages())
+        asyncio.create_task(self.process_serial_messages())
+    
+    async def connect_devices(self):
+        """Connect to Bluetooth and start serial monitor"""
+        await self.connect_bluetooth()
+        self.start_serial_monitor()
+        
+        if self.bt_connected:
+            await self.send_command("HELP")
+    
+    def notification_handler(self, sender, data):
+        """Handle incoming data from ESP32 via Bluetooth"""
+        try:
+            message = data.decode('utf-8').rstrip('\n\r')
+            if message:
+                timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                # Queue message for processing in main loop
+                asyncio.run_coroutine_threadsafe(
+                    self.bt_message_queue.put(f"[dim]{timestamp}[/] {message}"),
+                    self.loop
+                )
+        except UnicodeDecodeError:
+            timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            asyncio.run_coroutine_threadsafe(
+                self.bt_message_queue.put(f"[dim]{timestamp}[/] [yellow][Binary: {data.hex()}][/]"),
+                self.loop
+            )
+    
+    async def process_bt_messages(self):
+        """Process Bluetooth messages from queue"""
+        while self.running:
+            try:
+                message = await self.bt_message_queue.get()
+                self.bt_log_widget.write(message)
+            except Exception as e:
+                pass
+    
+    async def process_serial_messages(self):
+        """Process Serial messages from queue"""
+        while self.running:
+            try:
+                message = await self.serial_message_queue.get()
+                self.serial_log_widget.write(message)
+            except Exception as e:
+                pass
+    
+    async def connect_bluetooth(self):
+        """Scan for and connect to ESP32 device via Bluetooth"""
+        self.bt_log_widget.write(f"[yellow]Scanning for '{self.device_name}'...[/]")
         device = await BleakScanner.find_device_by_name(self.device_name, timeout=10.0)
         
         if not device:
-            print(f"\n❌ Device '{self.device_name}' not found!")
-            print("Make sure:")
-            print("  1. Device is powered on")
-            print("  2. Bluetooth is enabled on your computer")
-            print("  3. Device is within range")
-            print(f"  4. Device name matches '{self.device_name}' (check SETUP.INI BT_SSID)")
+            self.bt_log_widget.write(f"[red]❌ Device '{self.device_name}' not found![/]")
             return False
         
-        print(f"✓ Found device: {device.name} ({device.address})")
-        print("Connecting...")
+        self.bt_log_widget.write(f"[green]✓ Found: {device.name} ({device.address})[/]")
         
         try:
             self.client = BleakClient(device)
             await self.client.connect()
-            
-            # Enable notifications
             await self.client.start_notify(TX_UUID, self.notification_handler)
             
-            self.connected = True
-            print("✓ Connected!\n")
+            self.bt_connected = True
+            self.bt_log_widget.write("[green bold]✓ Bluetooth connected![/]")
+            self.sub_title = "BT: Connected"
             return True
             
         except Exception as e:
-            print(f"❌ Connection failed: {e}")
+            self.bt_log_widget.write(f"[red]❌ Connection failed: {e}[/]")
             return False
     
+    def start_serial_monitor(self):
+        """Start platformio serial monitor"""
+        try:
+            self.serial_log_widget.write("[yellow]Starting platformio serial monitor...[/]")
+            self.serial_process = subprocess.Popen(
+                ['platformio', 'device', 'monitor', '--baud', '115200'],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                bufsize=1,
+                universal_newlines=True
+            )
+            self.serial_connected = True
+            self.serial_log_widget.write("[green bold]✓ Serial monitor started![/]")
+            
+            # Start reading in thread
+            serial_thread = threading.Thread(target=self.read_serial_thread, daemon=True)
+            serial_thread.start()
+            return True
+        except FileNotFoundError:
+            self.serial_log_widget.write("[red]❌ platformio not found. Install it first.[/]")
+            return False
+        except Exception as e:
+            self.serial_log_widget.write(f"[red]❌ Failed to start serial monitor: {e}[/]")
+            return False
+    
+    def read_serial_thread(self):
+        """Read from platformio serial monitor in thread"""
+        while self.running and self.serial_connected and self.serial_process:
+            try:
+                line = self.serial_process.stdout.readline()
+                if line:
+                    message = line.rstrip('\n\r')
+                    if message and not message.startswith('---'):  # Skip platformio headers
+                        timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                        asyncio.run_coroutine_threadsafe(
+                            self.serial_message_queue.put(f"[dim]{timestamp}[/] {message}"),
+                            self.loop
+                        )
+                elif self.serial_process.poll() is not None:
+                    # Process ended
+                    self.serial_connected = False
+                    timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                    asyncio.run_coroutine_threadsafe(
+                        self.serial_message_queue.put(f"[dim]{timestamp}[/] [yellow]Serial monitor stopped[/]"),
+                        self.loop
+                    )
+                    break
+            except Exception as e:
+                timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                asyncio.run_coroutine_threadsafe(
+                    self.serial_message_queue.put(f"[dim]{timestamp}[/] [red]Error: {e}[/]"),
+                    self.loop
+                )
+    
     async def send_command(self, command):
-        """Send command to ESP32"""
-        if not self.connected or not self.client:
-            print("Not connected!")
+        """Send command to ESP32 via Bluetooth"""
+        if not self.bt_connected or not self.client:
+            timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            self.bt_log_widget.write(f"[dim]{timestamp}[/] [red]Not connected![/]")
             return False
         
         try:
+            timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            self.bt_log_widget.write(f"[dim]{timestamp}[/] [green]> {command}[/]")
             await self.client.write_gatt_char(RX_UUID, command.encode('utf-8'))
             
-            # Wait longer for commands that need more time
-            command_upper = command.upper().strip()
-            if command_upper in ['WAKE', 'WIFI ON', 'WIFI AP', 'WIFI CONNECT']:
-                await asyncio.sleep(2.0)  # Wait 2 seconds for WiFi operations
-            elif command_upper in ['STATUS', 'WIFI SCAN']:
-                await asyncio.sleep(0.5)  # Wait 0.5 seconds for status/scan
-            else:
-                await asyncio.sleep(0.3)  # Default wait
+            # Don't wait for response - let it come asynchronously
+            # The notification handler will display the response
             
             return True
         except Exception as e:
-            print(f"Error sending command: {e}")
+            timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            self.bt_log_widget.write(f"[dim]{timestamp}[/] [red]Error: {e}[/]")
             return False
     
-    async def disconnect(self):
-        """Disconnect from ESP32"""
-        if self.client and self.connected:
-            await self.client.disconnect()
-            self.connected = False
-            print("\n✓ Disconnected")
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Handle command submission"""
+        command = event.value.strip()
+        self.input_widget.value = ""
+        
+        if command.lower() in ['quit', 'exit', 'q']:
+            self.exit()
+            return
+        
+        if command and self.bt_connected:
+            # Run in background to not block UI
+            asyncio.create_task(self.send_command(command))
     
-    async def interactive_mode(self):
-        """Run interactive terminal"""
-        print("=" * 60)
-        print("ESP32 Bluetooth Terminal")
-        print("=" * 60)
-        print("\nType commands and press Enter")
-        print("Commands: HELP, STATUS, WIFI SCAN, etc.")
-        print("Type 'quit' or press Ctrl+C to exit\n")
+    async def on_unmount(self) -> None:
+        """Called when app is closing"""
+        self.running = False
         
-        # Send initial HELP command
-        await self.send_command("HELP")
-        print()
+        if self.client and self.bt_connected:
+            await self.client.disconnect()
+            self.bt_connected = False
         
-        while self.connected:
+        if self.serial_process and self.serial_connected:
+            self.serial_process.terminate()
             try:
-                # Get user input
-                command = input("> ")
-                
-                if command.lower() in ['quit', 'exit', 'q']:
-                    break
-                
-                if command.strip():
-                    await self.send_command(command)
-                    
-            except KeyboardInterrupt:
-                print("\n")
-                break
-            except EOFError:
-                break
+                self.serial_process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.serial_process.kill()
+            self.serial_connected = False
+    
 
-async def main():
+    
+
+
+def main():
     # Get device name from command line argument or use default
     device_name = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_DEVICE_NAME
     
-    print(f"ESP32 Bluetooth Terminal")
-    print(f"Target device: {device_name}")
-    print("-" * 60)
-    
-    terminal = ESP32Terminal(device_name)
-    
-    try:
-        # Connect to device
-        if await terminal.connect():
-            # Run interactive mode
-            await terminal.interactive_mode()
-    finally:
-        # Always disconnect
-        await terminal.disconnect()
+    # Create and run the app
+    app = ESP32Terminal(device_name)
+    app.title = "ESP32 Terminal"
+    app.sub_title = f"Device: {device_name}"
+    app.run()
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\nExiting...")
-        sys.exit(0)
+    main()
