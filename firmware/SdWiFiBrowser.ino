@@ -307,30 +307,118 @@ bool getImagesFromDCIM(std::vector<ImageFile>& allImages) {
   return true;
 }
 
-// Helper function to ensure SD card is initialized
+// Helper function to boost CPU frequency for SD operations
+void boostCPUForSD() {
+  if (sleepMode) {
+    BT.write("[SD] Boosting CPU to 240MHz for SD operations...\n");
+    SERIAL_ECHOLN("[SD] Boosting CPU frequency");
+    
+    esp_pm_config_esp32_t pm_config;
+    pm_config.max_freq_mhz = 240;
+    pm_config.min_freq_mhz = 240;
+    pm_config.light_sleep_enable = false;
+    esp_pm_configure(&pm_config);
+    
+    delay(50); // Give CPU time to stabilize
+    
+    BT.write("[SD] CPU frequency: ");
+    BT.write(String(getCpuFrequencyMhz()).c_str());
+    BT.write(" MHz\n");
+    SERIAL_ECHO("[SD] CPU frequency: ");
+    SERIAL_ECHO(String(getCpuFrequencyMhz()).c_str());
+    SERIAL_ECHOLN(" MHz");
+  }
+}
+
+// Helper function to restore sleep mode CPU frequency
+void restoreSleepCPU() {
+  if (sleepMode) {
+    BT.write("[SD] Restoring sleep mode CPU frequency...\n");
+    SERIAL_ECHOLN("[SD] Restoring sleep mode");
+    
+    esp_pm_config_esp32_t pm_config;
+    pm_config.max_freq_mhz = 80;
+    pm_config.min_freq_mhz = 10;
+    pm_config.light_sleep_enable = true;
+    esp_pm_configure(&pm_config);
+  }
+}
+
+// Helper function to ensure SD card is initialized and verify it's working
 bool ensureSDInitialized() {
+  // Boost CPU frequency if in sleep mode
+  boostCPUForSD();
+  
   if (!sdcontrol.wehaveControl()) {
     BT.write("[SD] SD card not initialized, setting up...\n");
+    SERIAL_ECHOLN("[SD] SD card not initialized");
     
     // Initialize SD control if not already done
     if (!serverStarted) {
       BT.write("[SD] Running first-time SD setup...\n");
+      SERIAL_ECHOLN("[SD] Running first-time setup");
       sdcontrol.setup();
       delay(100);
     }
     
     BT.write("[SD] Taking SD card control...\n");
+    SERIAL_ECHOLN("[SD] Taking SD card control");
     sdcontrol.takeControl();
     delay(200); // Give SD card time to initialize
     
     if (!sdcontrol.wehaveControl()) {
       BT.write("{\"error\":\"SD card not available - initialization failed\"}\n");
+      SERIAL_ECHOLN("[SD] ERROR: Initialization failed");
+      restoreSleepCPU(); // Restore sleep mode before returning
       return false;
     }
     BT.write("[SD] SD card control acquired\n");
+    SERIAL_ECHOLN("[SD] SD card control acquired");
   } else {
     BT.write("[SD] SD card already initialized\n");
+    SERIAL_ECHOLN("[SD] SD card already initialized");
   }
+  
+  // Verify SD card is actually working by trying to open root
+  BT.write("[SD] Verifying SD card access...\n");
+  SERIAL_ECHOLN("[SD] Verifying SD card access");
+  
+  File root = SD.open("/");
+  if (!root) {
+    BT.write("[SD] ERROR: Cannot open root directory!\n");
+    SERIAL_ECHOLN("[SD] ERROR: Cannot open root directory");
+    BT.write("[SD] SD card may not be inserted or formatted correctly\n");
+    SERIAL_ECHOLN("[SD] SD card may not be inserted or formatted correctly");
+    return false;
+  }
+  
+  if (!root.isDirectory()) {
+    BT.write("[SD] ERROR: Root is not a directory!\n");
+    SERIAL_ECHOLN("[SD] ERROR: Root is not a directory");
+    root.close();
+    return false;
+  }
+  
+  // Try to read at least one entry to verify SD is readable
+  File entry = root.openNextFile();
+  if (!entry) {
+    BT.write("[SD] WARNING: Root directory is empty\n");
+    SERIAL_ECHOLN("[SD] WARNING: Root directory is empty");
+    root.close();
+    // Don't fail here - empty SD is still valid
+  } else {
+    BT.write("[SD] Verification OK - found: ");
+    BT.write(entry.name());
+    BT.write("\n");
+    SERIAL_ECHO("[SD] Verification OK - found: ");
+    SERIAL_ECHOLN(entry.name());
+    entry.close();
+  }
+  
+  root.close();
+  
+  BT.write("[SD] SD card is ready\n");
+  SERIAL_ECHOLN("[SD] SD card is ready");
   return true;
 }
 
@@ -551,6 +639,9 @@ void handleQueueCommand() {
   
   BT.write("[QUEUE] Complete\n");
   SERIAL_ECHOLN("[QUEUE] Complete");
+  
+  // Restore sleep mode CPU frequency if needed
+  restoreSleepCPU();
 }
 
 // Unified function to update/reset queue with all new images
@@ -714,6 +805,9 @@ void updateQueueWithAllImages(bool isReset) {
   SERIAL_ECHO("[");
   SERIAL_ECHO(cmdName);
   SERIAL_ECHOLN("] Complete");
+  
+  // Restore sleep mode CPU frequency if needed
+  restoreSleepCPU();
 }
 
 // QUEUE UPDATE command - update queue with all new images
@@ -932,6 +1026,85 @@ void handleBluetoothCommand(String cmd) {
     return;
   }
   
+  // SD STATUS command - detailed SD card diagnostics
+  if (cmd == "SD STATUS") {
+    BT.write("=== SD Card Status ===\n");
+    SERIAL_ECHOLN("[SD STATUS] Command received");
+    
+    BT.write("Control Status: ");
+    BT.write(sdcontrol.wehaveControl() ? "ACTIVE\n" : "INACTIVE\n");
+    SERIAL_ECHO("[SD STATUS] Control: ");
+    SERIAL_ECHOLN(sdcontrol.wehaveControl() ? "ACTIVE" : "INACTIVE");
+    
+    if (!sdcontrol.wehaveControl()) {
+      BT.write("SD card is not initialized. Use 'SD ON' first.\n");
+      BT.write("=====================\n");
+      return;
+    }
+    
+    // Try to open root
+    BT.write("Root Access: ");
+    File root = SD.open("/");
+    if (!root) {
+      BT.write("FAILED - Cannot open root\n");
+      SERIAL_ECHOLN("[SD STATUS] ERROR: Cannot open root");
+    } else {
+      BT.write("OK\n");
+      SERIAL_ECHOLN("[SD STATUS] Root access OK");
+      
+      // List root contents
+      BT.write("Root Contents:\n");
+      int count = 0;
+      while (count < 10) {
+        File entry = root.openNextFile();
+        if (!entry) break;
+        BT.write("  - ");
+        BT.write(entry.name());
+        BT.write(entry.isDirectory() ? " [DIR]\n" : " [FILE]\n");
+        entry.close();
+        count++;
+      }
+      root.close();
+      
+      if (count == 0) {
+        BT.write("  (empty)\n");
+      }
+    }
+    
+    // Check DCIM folder
+    BT.write("DCIM Folder: ");
+    if (SD.exists("/DCIM")) {
+      BT.write("EXISTS\n");
+      SERIAL_ECHOLN("[SD STATUS] DCIM exists");
+      
+      File dcim = SD.open("/DCIM");
+      if (dcim && dcim.isDirectory()) {
+        BT.write("DCIM Contents:\n");
+        int count = 0;
+        while (count < 10) {
+          File entry = dcim.openNextFile();
+          if (!entry) break;
+          BT.write("  - ");
+          BT.write(entry.name());
+          BT.write(entry.isDirectory() ? " [DIR]\n" : " [FILE]\n");
+          entry.close();
+          count++;
+        }
+        dcim.close();
+        
+        if (count == 0) {
+          BT.write("  (empty)\n");
+        }
+      }
+    } else {
+      BT.write("NOT FOUND\n");
+      SERIAL_ECHOLN("[SD STATUS] DCIM not found");
+    }
+    
+    BT.write("=====================\n");
+    return;
+  }
+  
   // SD LIST command - list files in a directory
   if (cmd.startsWith("SD LIST")) {
     BT.write("[SD LIST] Starting...\n");
@@ -1132,7 +1305,7 @@ void handleBluetoothCommand(String cmd) {
   
   // If in sleep mode, only accept WAKE, STATUS, QUEUE, and SD commands
   if (sleepMode) {
-    BT.write("Device is sleeping. Available commands: WAKE, STATUS, QUEUE, QUEUE UPDATE, QUEUE RESET, SD ON, SD OFF, SD LIST\n");
+    BT.write("Device is sleeping. Available commands: WAKE, STATUS, QUEUE, QUEUE UPDATE, QUEUE RESET, SD ON, SD OFF, SD STATUS, SD LIST\n");
     return;
   }
   
@@ -1145,6 +1318,7 @@ void handleBluetoothCommand(String cmd) {
     BT.write("  QUEUE RESET - Delete queue and add all images\n");
     BT.write("  SD ON - Initialize and mount SD card\n");
     BT.write("  SD OFF - Unmount and release SD card\n");
+    BT.write("  SD STATUS - Show SD card diagnostics\n");
     BT.write("  SD LIST [path] - List files in directory (default: /)\n");
     BT.write("  SLEEP - Enter low power sleep mode\n");
     BT.write("  WAKE - Wake from sleep mode\n");
