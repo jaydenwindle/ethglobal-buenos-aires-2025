@@ -2,11 +2,19 @@
 #include "sdControl.h"
 #include <SPI.h>
 #include <SD.h>
+#include <SD_MMC.h>
 #include <StreamString.h>
 #include "serial.h"
 #include "network.h"
 #include "config.h"
 #include "bluetooth.h"
+
+// Define SD object based on mode (matches sdControl.cpp)
+#ifdef USE_SD_MMC
+  #define SD_OBJ SD_MMC
+#else
+  #define SD_OBJ SD
+#endif
 
 const char* PARAM_MESSAGE = "message";
 uint8_t printer_sd_type = 0;
@@ -266,8 +274,8 @@ bool FSWebServer::handleFileReadSD(String path, AsyncWebServerRequest *request) 
 	String contentType = getContentType(path, request);
 	String pathWithGz = path + ".gz";
 	sdcontrol.takeControl();
-	if (SD.exists(pathWithGz) || SD.exists(path)) {
-		if (SD.exists(pathWithGz)) {
+	if (SD_OBJ.exists(pathWithGz) || SD_OBJ.exists(path)) {
+		if (SD_OBJ.exists(pathWithGz)) {
 			path += ".gz";
 		}
 		DEBUG_LOG("Content type: %s\r\n", contentType.c_str());
@@ -342,7 +350,7 @@ void FSWebServer::onHttpDownload(AsyncWebServerRequest *request) {
     SERIAL_ECHOLN("SD control acquired");
     
     // Open file
-    File file = SD.open(path.c_str());
+    File file = SD_OBJ.open(path.c_str());
     if (!file) {
       SERIAL_ECHO("ERROR: File not found: ");
       SERIAL_ECHOLN(path.c_str());
@@ -491,7 +499,7 @@ void FSWebServer::onHttpList(AsyncWebServerRequest * request) {
   DEBUG_LOG("Opening path: '%s'\n", path.c_str());
   
   // Try to open the directory
-  File dir = SD.open(path.c_str());
+  File dir = SD_OBJ.open(path.c_str());
   
   if (!dir) {
     DEBUG_LOG("Failed to open path: '%s'\n", path.c_str());
@@ -603,7 +611,7 @@ void FSWebServer::onHttpDelete(AsyncWebServerRequest *request) {
     Serial.println(path);
 
     sdcontrol.takeControl();
-    if (path == "/" || !SD.exists((char *)path.c_str())) {
+    if (path == "/" || !SD_OBJ.exists((char *)path.c_str())) {
       request->send(500, "text/plain", "DELETE:BADPATH");
       Serial.println("path not exists");
     }
@@ -642,11 +650,11 @@ void FSWebServer::onHttpFileUpload(AsyncWebServerRequest *request, String filena
         uploadFile.close();
     }
 
-    if (SD.exists((char *)filename.c_str())) {
-      SD.remove((char *)filename.c_str());
+    if (SD_OBJ.exists((char *)filename.c_str())) {
+      SD_OBJ.remove((char *)filename.c_str());
     }
 
-    uploadFile = SD.open(filename.c_str(), FILE_WRITE);
+    uploadFile = SD_OBJ.open(filename.c_str(), FILE_WRITE);
     if(!uploadFile) {
       request->send(500, "text/plain", "UPLOAD:OPENFAILED");
       sdcontrol.relinquishControl();

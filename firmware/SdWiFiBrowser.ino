@@ -12,9 +12,14 @@
 #include <SD_MMC.h>
 #include <ArduinoJson.h>
 
-// Note: We use SD (SPI mode) directly throughout this file
-// sdControl.cpp initializes SD via SPI, not SD_MMC
-// FSWebServer.cpp also uses SD directly
+// Define SD object based on mode (matches sdControl.cpp)
+#ifdef USE_SD_MMC
+  #define SD_OBJ SD_MMC
+  #pragma message("Using SD_MMC mode")
+#else
+  #define SD_OBJ SD
+  #pragma message("Using SD SPI mode")
+#endif
 
 // Sleep mode state
 bool sleepMode = false;
@@ -192,7 +197,7 @@ void scanDirectoryForImages(const String& dirPath, std::vector<ImageFile>& allIm
   BT.write(dirPath.c_str());
   BT.write("\n");
   
-  File dir = SD.open(dirPath.c_str());
+  File dir = SD_OBJ.open(dirPath.c_str());
   if (!dir || !dir.isDirectory()) {
     DEBUG_LOG("[SCAN] Cannot open directory: %s\n", dirPath.c_str());
     BT.write("[SCAN] ERROR: Cannot open directory\n");
@@ -273,7 +278,7 @@ bool getImagesFromDCIM(std::vector<ImageFile>& allImages) {
   SERIAL_ECHOLN("[DCIM] Starting recursive scan");
   
   // Check if DCIM folder exists
-  if (!SD.exists(dcimPath)) {
+  if (!SD_OBJ.exists(dcimPath)) {
     BT.write("{\"error\":\"DCIM folder not found\"}\n");
     SERIAL_ECHOLN("[DCIM] ERROR: DCIM folder not found");
     return false;
@@ -383,7 +388,7 @@ bool ensureSDInitialized() {
   BT.write("[SD] Verifying SD card access...\n");
   SERIAL_ECHOLN("[SD] Verifying SD card access");
   
-  File root = SD.open("/");
+  File root = SD_OBJ.open("/");
   if (!root) {
     BT.write("[SD] ERROR: Cannot open root directory!\n");
     SERIAL_ECHOLN("[SD] ERROR: Cannot open root directory");
@@ -424,7 +429,7 @@ bool ensureSDInitialized() {
 
 // Helper function to write queue.json file (pretty-printed)
 bool writeQueueJSON(const char* queuePath, const std::vector<ImageFile>& queuedImages) {
-  File queueFile = SD.open(queuePath, FILE_WRITE);
+  File queueFile = SD_OBJ.open(queuePath, FILE_WRITE);
   if (!queueFile) {
     BT.write("[QUEUE] ERROR: Failed to open queue.json for writing\n");
     SERIAL_ECHOLN("[QUEUE] ERROR: Failed to open queue.json for writing");
@@ -461,7 +466,7 @@ bool writeQueueJSON(const char* queuePath, const std::vector<ImageFile>& queuedI
 
 // Helper function to read queue.json file (handles both compact and pretty-printed)
 bool readQueueJSON(const char* queuePath, std::vector<ImageFile>& queuedImages) {
-  File queueFile = SD.open(queuePath, FILE_READ);
+  File queueFile = SD_OBJ.open(queuePath, FILE_READ);
   if (!queueFile) {
     DEBUG_LOG("[readQueueJSON] Failed to open file\n");
     return false;
@@ -579,7 +584,7 @@ void handleQueueCommand() {
   const char* queuePath = "/queue.json";
   
   // Check if queue.json exists
-  if (!SD.exists(queuePath)) {
+  if (!SD_OBJ.exists(queuePath)) {
     BT.write("{\"error\":\"Queue does not exist. Use QUEUE UPDATE to create it.\"}\n");
     SERIAL_ECHOLN("[QUEUE] Queue file does not exist");
     return;
@@ -663,7 +668,7 @@ void updateQueueWithAllImages(bool isReset) {
   const char* queuePath = "/queue.json";
   
   // If RESET, delete existing queue
-  if (isReset && SD.exists(queuePath)) {
+  if (isReset && SD_OBJ.exists(queuePath)) {
     BT.write("[");
     BT.write(cmdName);
     BT.write("] Deleting existing queue.json...\n");
@@ -671,7 +676,7 @@ void updateQueueWithAllImages(bool isReset) {
     SERIAL_ECHO(cmdName);
     SERIAL_ECHOLN("] Deleting existing queue.json");
     
-    if (SD.remove(queuePath)) {
+    if (SD_OBJ.remove(queuePath)) {
       BT.write("[");
       BT.write(cmdName);
       BT.write("] Old queue.json deleted\n");
@@ -697,7 +702,7 @@ void updateQueueWithAllImages(bool isReset) {
   // Read existing queue if it exists (and not reset)
   std::vector<ImageFile> queuedImages;
   int addedCount = 0;
-  bool queueExists = !isReset && SD.exists(queuePath);
+  bool queueExists = !isReset && SD_OBJ.exists(queuePath);
   
   if (queueExists) {
     BT.write("[");
@@ -1044,7 +1049,7 @@ void handleBluetoothCommand(String cmd) {
     
     // Try to open root
     BT.write("Root Access: ");
-    File root = SD.open("/");
+    File root = SD_OBJ.open("/");
     if (!root) {
       BT.write("FAILED - Cannot open root\n");
       SERIAL_ECHOLN("[SD STATUS] ERROR: Cannot open root");
@@ -1073,11 +1078,11 @@ void handleBluetoothCommand(String cmd) {
     
     // Check DCIM folder
     BT.write("DCIM Folder: ");
-    if (SD.exists("/DCIM")) {
+    if (SD_OBJ.exists("/DCIM")) {
       BT.write("EXISTS\n");
       SERIAL_ECHOLN("[SD STATUS] DCIM exists");
       
-      File dcim = SD.open("/DCIM");
+      File dcim = SD_OBJ.open("/DCIM");
       if (dcim && dcim.isDirectory()) {
         BT.write("DCIM Contents:\n");
         int count = 0;
@@ -1153,10 +1158,10 @@ void handleBluetoothCommand(String cmd) {
     
     // Check if path exists
     BT.write("[SD LIST] Checking if path exists... ");
-    SERIAL_ECHO("[SD LIST] SD.exists('");
+    SERIAL_ECHO("[SD LIST] SD_OBJ.exists('");
     SERIAL_ECHO(path.c_str());
     SERIAL_ECHO("') = ");
-    bool pathExists = SD.exists(path.c_str());
+    bool pathExists = SD_OBJ.exists(path.c_str());
     SERIAL_ECHOLN(pathExists ? "true" : "false");
     
     if (!pathExists) {
@@ -1170,7 +1175,7 @@ void handleBluetoothCommand(String cmd) {
       
       // Try to list root to help debug
       BT.write("[SD LIST] Attempting to open root directory for debugging...\n");
-      File rootDir = SD.open("/");
+      File rootDir = SD_OBJ.open("/");
       if (rootDir) {
         BT.write("[SD LIST] Root directory opened successfully\n");
         if (rootDir.isDirectory()) {
@@ -1205,11 +1210,11 @@ void handleBluetoothCommand(String cmd) {
     SERIAL_ECHO(path.c_str());
     SERIAL_ECHOLN("'");
     
-    File dir = SD.open(path.c_str());
+    File dir = SD_OBJ.open(path.c_str());
     if (!dir) {
       BT.write("FAILED\n");
       BT.write("[SD LIST] ERROR: Cannot open path\n");
-      SERIAL_ECHOLN("[SD LIST] ERROR: SD.open() returned null");
+      SERIAL_ECHOLN("[SD LIST] ERROR: SD_OBJ.open() returned null");
       BT.write("{\"error\":\"Cannot open path\"}\n");
       return;
     }

@@ -62,13 +62,52 @@ void SDControl::takeControl()	{
 	digitalWrite(SD_SWITCH_PIN,LOW); // Switch SD pins to ESP32
 	delay(50);
 
+#ifdef USE_SD_MMC
+	// Use SD_MMC mode (1-bit interface) - more stable
+	SERIAL_ECHOLN("Using SD_MMC mode (1-bit interface)");
+	
+	int cnt = 0;
+	while(cnt < 5) {
+		SERIAL_ECHO("SD_MMC init attempt ");
+		SERIAL_ECHO(String(cnt + 1).c_str());
+		SERIAL_ECHO("... ");
+		
+		// Begin SD_MMC with 1-bit mode (more compatible)
+		// Parameters: mountpoint, mode1bit, format_if_mount_failed
+		if(SD_MMC.begin("/sdcard", true, false)) {
+			SERIAL_ECHOLN("SUCCESS");
+			break;
+		}
+		
+		SERIAL_ECHOLN("FAILED");
+		delay(500);
+		cnt++;
+	}
+	
+	if(cnt >= 5) {
+		SERIAL_ECHOLN("ERROR: SD_MMC initialization failed after 5 attempts");
+	}
+#else
+	// Use SPI mode
+	SERIAL_ECHOLN("Using SD (SPI) mode");
+	
 	SPI.begin(SD_SCLK_PIN,SD_MISO_PIN,SD_MOSI_PIN,SD_CS_PIN);
 
 	int cnt = 0;
 	while((!SD.begin(SD_CS_PIN)&&(cnt<5))) {
+		SERIAL_ECHO("SD SPI init attempt ");
+		SERIAL_ECHO(String(cnt + 1).c_str());
+		SERIAL_ECHOLN("... FAILED");
 		delay(500);
 		cnt++;
 	}
+	
+	if(cnt < 5) {
+		SERIAL_ECHOLN("SD SPI initialized successfully");
+	} else {
+		SERIAL_ECHOLN("ERROR: SD SPI initialization failed after 5 attempts");
+	}
+#endif
   
 	DEBUG_LOG("takeControl\n");
 }
@@ -82,8 +121,14 @@ void SDControl:: relinquishControl()	{
 	pinMode(SD_CLK_PIN, INPUT_PULLUP);
 	pinMode(SD_CMD_PIN, INPUT_PULLUP);
 
+#ifdef USE_SD_MMC
+	SD_MMC.end();
+	SERIAL_ECHOLN("SD_MMC released");
+#else
 	SD.end();
 	SPI.end();
+	SERIAL_ECHOLN("SD SPI released");
+#endif
 
 	digitalWrite(SD_SWITCH_PIN,HIGH);
 	delay(50);
@@ -114,6 +159,18 @@ bool SDControl::printerRequest() {
 
 void SDControl::deleteFile(String path)
 {
+#ifdef USE_SD_MMC
+  File file = SD_MMC.open((char *)path.c_str());
+  if(!file) {
+    DEBUG_LOG("Open file fail\n");
+    return;
+  }
+  if (!file.isDirectory()) 
+  {
+    file.close();
+    SD_MMC.remove((char *)path.c_str());
+  }
+#else
   File file = SD.open((char *)path.c_str());
   if(!file) {
     DEBUG_LOG("Open file fail\n");
@@ -124,6 +181,7 @@ void SDControl::deleteFile(String path)
     file.close();
     SD.remove((char *)path.c_str());
   }
+#endif
 }
 
 SDControl sdcontrol;
