@@ -12,12 +12,9 @@
 #include <SD_MMC.h>
 #include <ArduinoJson.h>
 
-// Define SD object based on mode
-#ifdef USE_SD_MMC
-  #define SD_OBJ SD_MMC
-#else
-  #define SD_OBJ SD
-#endif
+// Note: We use SD (SPI mode) directly throughout this file
+// sdControl.cpp initializes SD via SPI, not SD_MMC
+// FSWebServer.cpp also uses SD directly
 
 // Sleep mode state
 bool sleepMode = false;
@@ -197,13 +194,13 @@ void handleQueueCommand() {
   const char* dcimPath = "/DCIM";
   
   // Check if DCIM folder exists
-  if (!SD_OBJ.exists(dcimPath)) {
+  if (!SD.exists(dcimPath)) {
     BT.write("{\"error\":\"DCIM folder not found\"}\n");
     return;
   }
   
   // Get list of image files in DCIM (sorted by modification time)
-  File dcimDir = SD_OBJ.open(dcimPath);
+  File dcimDir = SD.open(dcimPath);
   if (!dcimDir || !dcimDir.isDirectory()) {
     BT.write("{\"error\":\"Cannot open DCIM folder\"}\n");
     return;
@@ -245,14 +242,14 @@ void handleQueueCommand() {
   BT.write(" images in DCIM\n");
   
   // Check if queue.txt exists
-  bool queueExists = SD_OBJ.exists(queuePath);
+  bool queueExists = SD.exists(queuePath);
   std::vector<String> queuedImages;
   int addedCount = 0;
   
   if (queueExists) {
     BT.write("[QUEUE] Reading existing queue.txt...\n");
     // Read existing queue
-    File queueFile = SD_OBJ.open(queuePath, FILE_READ);
+    File queueFile = SD.open(queuePath, FILE_READ);
     if (queueFile) {
       while (queueFile.available()) {
         String line = queueFile.readStringUntil('\n');
@@ -289,7 +286,7 @@ void handleQueueCommand() {
       BT.write(" new images to queue\n");
       
       // Update queue.txt with new images
-      File queueFile = SD_OBJ.open(queuePath, FILE_WRITE);
+      File queueFile = SD.open(queuePath, FILE_WRITE);
       if (queueFile) {
         for (const auto& img : queuedImages) {
           queueFile.println(img);
@@ -301,7 +298,7 @@ void handleQueueCommand() {
     BT.write("[QUEUE] Creating new queue.txt with 5 oldest images...\n");
     // Create new queue with 5 oldest images
     int count = min(5, (int)allImages.size());
-    File queueFile = SD_OBJ.open(queuePath, FILE_WRITE);
+    File queueFile = SD.open(queuePath, FILE_WRITE);
     if (queueFile) {
       for (int i = 0; i < count; i++) {
         queueFile.println(allImages[i].name);
@@ -537,6 +534,9 @@ void handleBluetoothCommand(String cmd) {
   
   // SD LIST command - list files in a directory
   if (cmd.startsWith("SD LIST")) {
+    BT.write("[SD LIST] Starting...\n");
+    SERIAL_ECHOLN("[SD LIST] Command received");
+    
     // Extract path parameter (default to "/" if not provided)
     String path = "/";
     if (cmd.length() > 8) {
@@ -544,39 +544,131 @@ void handleBluetoothCommand(String cmd) {
       path.trim();
     }
     
-    // Ensure SD card is available
+    BT.write("[SD LIST] Requested path: '");
+    BT.write(path.c_str());
+    BT.write("'\n");
+    SERIAL_ECHO("[SD LIST] Requested path: '");
+    SERIAL_ECHO(path.c_str());
+    SERIAL_ECHOLN("'");
+    
+    // Check SD card control status
+    BT.write("[SD LIST] Checking SD control... ");
+    SERIAL_ECHO("[SD LIST] wehaveControl() = ");
+    SERIAL_ECHOLN(sdcontrol.wehaveControl() ? "true" : "false");
+    
     if (!sdcontrol.wehaveControl()) {
-      BT.write("[SD LIST] SD card not initialized\n");
+      BT.write("FAILED\n");
+      BT.write("[SD LIST] ERROR: SD card not initialized\n");
       BT.write("Use 'SD ON' command first\n");
+      SERIAL_ECHOLN("[SD LIST] ERROR: SD card not initialized");
       return;
     }
+    BT.write("OK\n");
+    
+    // Ensure path starts with /
+    if (path.length() == 0 || path[0] != '/') {
+      path = "/" + path;
+      BT.write("[SD LIST] Normalized path to: '");
+      BT.write(path.c_str());
+      BT.write("'\n");
+    }
+    
+    // Use SD directly (SPI mode) like FSWebServer does
+    // sdControl.cpp initializes SD (SPI), not SD_MMC
+    BT.write("[SD LIST] Using SD (SPI) mode (same as FSWebServer)\n");
+    SERIAL_ECHOLN("[SD LIST] Using SD (SPI) mode");
     
     // Check if path exists
-    if (path != "/" && !SD_OBJ.exists(path.c_str())) {
-      BT.write("{\"error\":\"Path not found\"}\n");
+    BT.write("[SD LIST] Checking if path exists... ");
+    SERIAL_ECHO("[SD LIST] SD.exists('");
+    SERIAL_ECHO(path.c_str());
+    SERIAL_ECHO("') = ");
+    bool pathExists = SD.exists(path.c_str());
+    SERIAL_ECHOLN(pathExists ? "true" : "false");
+    
+    if (!pathExists) {
+      BT.write("NOT FOUND\n");
+      BT.write("[SD LIST] ERROR: Path does not exist: '");
+      BT.write(path.c_str());
+      BT.write("'\n");
+      SERIAL_ECHO("[SD LIST] ERROR: Path not found: '");
+      SERIAL_ECHO(path.c_str());
+      SERIAL_ECHOLN("'");
+      
+      // Try to list root to help debug
+      BT.write("[SD LIST] Attempting to open root directory for debugging...\n");
+      File rootDir = SD.open("/");
+      if (rootDir) {
+        BT.write("[SD LIST] Root directory opened successfully\n");
+        if (rootDir.isDirectory()) {
+          BT.write("[SD LIST] Root is a directory. First few entries:\n");
+          int debugCount = 0;
+          while (debugCount < 5) {
+            File entry = rootDir.openNextFile();
+            if (!entry) break;
+            BT.write("  - ");
+            BT.write(entry.name());
+            BT.write(entry.isDirectory() ? " [DIR]\n" : " [FILE]\n");
+            entry.close();
+            debugCount++;
+          }
+        }
+        rootDir.close();
+      } else {
+        BT.write("[SD LIST] ERROR: Cannot even open root directory!\n");
+        SERIAL_ECHOLN("[SD LIST] ERROR: Cannot open root directory");
+      }
+      
+      BT.write("{\"error\":\"Path not found: ");
+      BT.write(path.c_str());
+      BT.write("\"}\n");
       return;
     }
+    BT.write("EXISTS\n");
     
     // Open directory
-    File dir = SD_OBJ.open(path.c_str());
+    BT.write("[SD LIST] Opening directory... ");
+    SERIAL_ECHO("[SD LIST] Opening directory: '");
+    SERIAL_ECHO(path.c_str());
+    SERIAL_ECHOLN("'");
+    
+    File dir = SD.open(path.c_str());
     if (!dir) {
+      BT.write("FAILED\n");
+      BT.write("[SD LIST] ERROR: Cannot open path\n");
+      SERIAL_ECHOLN("[SD LIST] ERROR: SD.open() returned null");
       BT.write("{\"error\":\"Cannot open path\"}\n");
       return;
     }
+    BT.write("OK\n");
     
-    if (!dir.isDirectory()) {
+    // Check if it's a directory
+    BT.write("[SD LIST] Checking if path is directory... ");
+    bool isDirectory = dir.isDirectory();
+    SERIAL_ECHO("[SD LIST] isDirectory() = ");
+    SERIAL_ECHOLN(isDirectory ? "true" : "false");
+    
+    if (!isDirectory) {
+      BT.write("NO (it's a file)\n");
       dir.close();
+      BT.write("[SD LIST] ERROR: Path is not a directory\n");
+      SERIAL_ECHOLN("[SD LIST] ERROR: Path is a file, not a directory");
       BT.write("{\"error\":\"Path is not a directory\"}\n");
       return;
     }
+    BT.write("YES\n");
     
     dir.rewindDirectory();
+    BT.write("[SD LIST] Building JSON response...\n");
+    SERIAL_ECHOLN("[SD LIST] Building JSON response");
     
     // Build JSON output similar to onHttpList
     BT.write("[");
     bool first = true;
+    int count = 0;
+    const int MAX_ITEMS = 200;
     
-    while (true) {
+    while (count < MAX_ITEMS) {
       File entry = dir.openNextFile();
       if (!entry) {
         break;
@@ -587,18 +679,53 @@ void handleBluetoothCommand(String cmd) {
       }
       first = false;
       
+      bool isDir = entry.isDirectory();
+      String entryName = String(entry.name());
+      
+      DEBUG_LOG("[SD LIST] Entry: '%s' isDir=%d\n", entryName.c_str(), isDir);
+      
+      // Extract just the filename from full path
+      int lastSlash = entryName.lastIndexOf('/');
+      String displayName = (lastSlash >= 0) ? entryName.substring(lastSlash + 1) : entryName;
+      
+      // Construct full path by combining parent path with filename
+      String fullPath;
+      if (entryName.startsWith("/")) {
+        // Entry name is already a full path
+        fullPath = entryName;
+      } else {
+        // Entry name is relative, combine with parent path
+        fullPath = path;
+        if (!path.endsWith("/")) {
+          fullPath += "/";
+        }
+        fullPath += displayName;
+      }
+      
+      DEBUG_LOG("[SD LIST] Full path: '%s'\n", fullPath.c_str());
+      
       BT.write("{\"type\":\"");
-      BT.write(entry.isDirectory() ? "dir" : "file");
+      BT.write(isDir ? "dir" : "file");
       BT.write("\",\"name\":\"");
-      BT.write(entry.name());
-      BT.write("\",\"size\":\"");
+      BT.write(displayName.c_str());
+      BT.write("\",\"path\":\"");
+      BT.write(fullPath.c_str());
+      BT.write("\",\"size\":");
       BT.write(String(entry.size()).c_str());
-      BT.write("\"}");
+      BT.write("}");
       
       entry.close();
+      count++;
     }
     
     BT.write("]\n");
+    BT.write("[SD LIST] Complete. Listed ");
+    BT.write(String(count).c_str());
+    BT.write(" items\n");
+    SERIAL_ECHO("[SD LIST] Complete. Listed ");
+    SERIAL_ECHO(String(count).c_str());
+    SERIAL_ECHOLN(" items");
+    
     dir.close();
     return;
   }
