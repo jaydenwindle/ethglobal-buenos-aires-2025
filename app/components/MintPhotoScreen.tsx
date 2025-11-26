@@ -1,5 +1,6 @@
-import { View, Text, Button, Image, StyleSheet, ActivityIndicator } from "react-native"
-import { useEffect } from "react"
+import { View, Text, Button, Image, StyleSheet, ActivityIndicator, TouchableOpacity, Alert, ScrollView } from "react-native"
+import { useEffect, useState, useCallback } from "react"
+import * as Clipboard from "expo-clipboard";
 
 import { createMachine, fromPromise, fromCallback, assign } from 'xstate';
 import { useMachine } from '@xstate/react';
@@ -8,6 +9,10 @@ import { Buffer } from "buffer";
 import WifiManager from "react-native-wifi-reborn";
 import { SDCardAPI, FileEntry } from "../services/sdcard";
 import { useTheme } from "../theme/ThemeContext";
+import { createMetadataBuilder, ValidMetadataURI, createCoinCall, CreateConstants } from "@zoralabs/coins-sdk";
+import { Address } from "viem";
+import { base } from "viem/chains";
+import { useCurrentUser, useSendUserOperation } from "@coinbase/cdp-hooks";
 
 // Types for the state machine
 type MintPhotoContext = {
@@ -22,24 +27,76 @@ type MintPhotoContext = {
   downloadingFile?: FileEntry;
   downloadProgress?: number;
   localFileUri?: string;
+  base64Data?: string;
+  imageIpfsUri?: string;
+  metadata?: any;
+  metadataUri?: string;
+  creatorAddress?: string;
 };
 
 type MintPhotoEvents =
   | { type: 'retry' }
-  | { type: 'start' }
+  | { type: 'start'; creatorAddress: string }
   | { type: 'dataReceived'; data: string }
   | { type: 'retryWifi' }
   | { type: 'downloadProgress'; progress: number }
-  | { type: 'downloadComplete'; localUri: string }
-  | { type: 'downloadError'; error: string };
+  | { type: 'downloadComplete'; localUri: string; base64Data: string }
+  | { type: 'downloadError'; error: string }
+  | { type: 'generateMetadata' };
 
 const DEVICE_NAME = "digicam-001";
 const SERVICE_UUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E";
 const RX_CHARACTERISTIC_UUID = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E";
 const TX_CHARACTERISTIC_UUID = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E";
+// TODO: Replace with actual creator address from wallet/user
+const CREATOR_ADDRESS = "0x17cd072cBd45031EFc21Da538c783E0ed3b25DCc";
 
 // Persistent BLE Manager instance
 const bleManager = new BleManager();
+
+// Custom Pinata uploader for Zora SDK
+type UploadResult = {
+  url: ValidMetadataURI;
+  size: number | undefined;
+  mimeType: string | undefined;
+};
+
+interface Uploader {
+  upload(file: File): Promise<UploadResult>;
+}
+
+const createPinataUploader = (): Uploader => ({
+  async upload(file: File): Promise<UploadResult> {
+    console.log(`Uploading to Pinata: ${file.name}`);
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const response = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.EXPO_PUBLIC_PINATA_JWT}`,
+      },
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Pinata upload failed (${response.status}): ${errorText}`);
+    }
+
+    const result = await response.json();
+    const ipfsUrl = `ipfs://${result.IpfsHash}`;
+
+    console.log(`Uploaded to IPFS: ${ipfsUrl}`);
+
+    return {
+      url: ipfsUrl as ValidMetadataURI,
+      size: result.PinSize,
+      mimeType: file.type,
+    };
+  }
+});
 
 // Helper function to parse WiFi credentials from received data
 const parseWifiCredentials = (data: string): { ssid: string; password: string } | null => {
@@ -215,7 +272,7 @@ const listFiles = fromPromise<FileEntry[], void>(async () => {
 
 // Callback actor to download a file from camera with progress tracking
 const downloadFile = fromCallback<
-  { type: 'downloadProgress'; progress: number } | { type: 'downloadComplete'; localUri: string } | { type: 'downloadError'; error: string },
+  { type: 'downloadProgress'; progress: number } | { type: 'downloadComplete'; localUri: string; base64Data: string } | { type: 'downloadError'; error: string },
   { file: FileEntry }
 >(({ sendBack, input }) => {
   console.log(`Downloading file: ${input.file.name}`);
@@ -225,7 +282,7 @@ const downloadFile = fromCallback<
   // Start the download
   (async () => {
     try {
-      const localUri = await api.downloadFileToLocal(
+      const { localUri, base64Data } = await api.downloadFileToLocal(
         input.file.path,
         input.file.size,
         (progress, totalBytes, downloadedBytes) => {
@@ -237,7 +294,7 @@ const downloadFile = fromCallback<
       );
 
       console.log(`File downloaded to: ${localUri}`);
-      sendBack({ type: 'downloadComplete', localUri });
+      sendBack({ type: 'downloadComplete', localUri, base64Data });
 
     } catch (error: any) {
       const errorMessage = error?.message || error?.toString() || 'Unknown error';
@@ -250,6 +307,101 @@ const downloadFile = fromCallback<
   return () => {
     console.log('Download actor cleanup');
   };
+});
+
+// Promise actor to upload image to Pinata
+const uploadImageToPinata = fromPromise<string, { localFileUri: string; fileName: string }>(async ({ input }) => {
+  console.log(`Uploading image to Pinata: ${input.fileName}`);
+
+  try {
+    // Create FormData for Pinata API
+    const formData = new FormData();
+    formData.append('file', {
+      uri: input.localFileUri,
+      name: input.fileName,
+      type: 'image/jpg',
+    } as any);
+
+    console.log('Uploading to Pinata API...');
+
+    // Upload to Pinata API
+    const uploadResponse = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.EXPO_PUBLIC_PINATA_JWT}`,
+      },
+      body: formData,
+    });
+
+    if (!uploadResponse.ok) {
+      const errorText = await uploadResponse.text();
+      throw new Error(`Pinata API error (${uploadResponse.status}): ${errorText}`);
+    }
+
+    const result = await uploadResponse.json();
+    const ipfsUri = `ipfs://${result.IpfsHash}`;
+
+    console.log(`Image uploaded to IPFS: ${ipfsUri}`);
+    return ipfsUri;
+
+  } catch (error: any) {
+    const errorMessage = error?.message || error?.toString() || 'Unknown error';
+    console.log(`Image upload failed: ${errorMessage}`);
+    throw new Error(`Failed to upload image: ${errorMessage}`);
+  }
+});
+
+// Promise actor to generate Zora metadata
+const generateZoraMetadata = fromPromise<{ metadata: any; metadataUri: string }, { imageIpfsUri: string; fileName: string; creatorAddress: string }>(async ({ input }) => {
+  console.log(`Generating Zora metadata for: ${input.fileName}`);
+
+  try {
+    // Generate metadata using Zora SDK
+    const metadata = createMetadataBuilder()
+      .withName("digicam.eth photo")
+      .withSymbol("PHOTO")
+      .withDescription(`photo captured with digicam-0001: ${input.fileName}`)
+      .withImageURI(input.imageIpfsUri)
+      .generateMetadata();
+
+    console.log(`Metadata generated:`, metadata);
+
+    // Upload metadata JSON to Pinata
+    console.log('Uploading metadata to IPFS...');
+    const response = await fetch('https://api.pinata.cloud/pinning/pinJSONToIPFS', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${process.env.EXPO_PUBLIC_PINATA_JWT}`,
+      },
+      body: JSON.stringify({
+        pinataContent: metadata,
+        pinataMetadata: {
+          name: `metadata-${input.fileName}.json`
+        }
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Pinata metadata upload failed (${response.status}): ${errorText}`);
+    }
+
+    const result = await response.json();
+    const metadataUri = `ipfs://${result.IpfsHash}`;
+
+    console.log(`Metadata uploaded to IPFS: ${metadataUri}`);
+
+    return {
+      metadata,
+      metadataUri
+    };
+
+  } catch (error: any) {
+    const errorMessage = error?.message || error?.toString() || 'Unknown error';
+    console.log(`Metadata generation/upload failed: ${errorMessage}`);
+    throw new Error(`Failed to generate/upload metadata: ${errorMessage}`);
+  }
 });
 
 // Callback actor to monitor notifications from the device
@@ -355,7 +507,12 @@ const bluetoothMachine = createMachine({
       states: {
         WaitingForUserInput: {
           on: {
-            start: 'SendingSleepCommand',
+            start: {
+              target: 'SendingSleepCommand',
+              actions: assign({
+                creatorAddress: ({ event }) => event.creatorAddress,
+              }),
+            },
           },
         },
         SendingSleepCommand: {
@@ -551,6 +708,7 @@ const bluetoothMachine = createMachine({
               actions: assign({
                 error: undefined,
                 localFileUri: ({ event }) => event.localUri,
+                base64Data: ({ event }) => event.base64Data,
                 downloadProgress: 1,
               }),
             },
@@ -566,7 +724,105 @@ const bluetoothMachine = createMachine({
           // Could add retry logic here
         },
         FileDownloaded: {
-          // Final state - file is downloaded
+          always: {
+            target: 'SendingSleepBeforeUpload',
+          },
+        },
+        SendingSleepBeforeUpload: {
+          invoke: {
+            src: sendCommand,
+            input: ({ context }) => ({
+              device: context.connectedDevice!,
+              command: 'SLEEP',
+            }),
+            onDone: {
+              target: 'AwaitingSleepResponseBeforeUpload',
+            },
+            onError: {
+              target: 'AwaitingSleepResponseBeforeUpload',
+              actions: assign({
+                error: ({ event }) => `Failed to send SLEEP command: ${event.error instanceof Error ? event.error.message : 'Unknown error'}`,
+              }),
+            },
+          },
+        },
+        AwaitingSleepResponseBeforeUpload: {
+          on: {
+            dataReceived: {
+              target: 'ReadyToUpload',
+              guard: ({ event }) => {
+                const data = event.data.toLowerCase();
+                return data.includes('zzz') || data.includes('wake');
+              },
+            },
+          },
+        },
+        ReadyToUpload: {
+          on: {
+            generateMetadata: {
+              target: 'UploadingImage',
+            },
+          },
+        },
+        UploadingImage: {
+          invoke: {
+            src: uploadImageToPinata,
+            input: ({ context }) => ({
+              localFileUri: context.localFileUri!,
+              fileName: context.downloadingFile?.name || 'photo.jpg',
+            }),
+            onDone: {
+              target: 'ImageUploaded',
+              actions: assign({
+                error: undefined,
+                imageIpfsUri: ({ event }) => event.output,
+              }),
+            },
+            onError: {
+              target: 'ImageUploadFailed',
+              actions: assign({
+                error: ({ event }) => event.error instanceof Error ? event.error.message : 'Unknown error',
+              }),
+            },
+          },
+        },
+        ImageUploadFailed: {
+          // Could add retry logic here
+        },
+        ImageUploaded: {
+          always: {
+            target: 'GeneratingMetadata',
+          },
+        },
+        GeneratingMetadata: {
+          invoke: {
+            src: generateZoraMetadata,
+            input: ({ context }) => ({
+              imageIpfsUri: context.imageIpfsUri!,
+              fileName: context.downloadingFile?.name || 'photo.jpg',
+              creatorAddress: context.creatorAddress || CREATOR_ADDRESS,
+            }),
+            onDone: {
+              target: 'MetadataGenerated',
+              actions: assign({
+                error: undefined,
+                metadata: ({ event }) => event.output.metadata,
+                metadataUri: ({ event }) => event.output.metadataUri,
+              }),
+            },
+            onError: {
+              target: 'MetadataGenerationFailed',
+              actions: assign({
+                error: ({ event }) => event.error instanceof Error ? event.error.message : 'Unknown error',
+              }),
+            },
+          },
+        },
+        MetadataGenerationFailed: {
+          // Could add retry logic here
+        },
+        MetadataGenerated: {
+          // Final state - metadata is generated and uploaded
         },
       },
     },
@@ -578,6 +834,13 @@ const bluetoothMachine = createMachine({
 export const MintPhotoScreen = () => {
   const [snapshot, send] = useMachine(bluetoothMachine)
   const { colors } = useTheme()
+  const { currentUser } = useCurrentUser()
+  const { sendUserOperation, data: txData, error: txError, status: txStatus } = useSendUserOperation()
+
+  const [coinAddress, setCoinAddress] = useState<string | undefined>()
+  const [mintError, setMintError] = useState<string | undefined>()
+
+  const smartAccount = currentUser?.evmSmartAccounts?.[0]
 
   // Cleanup BLE manager on unmount
   useEffect(() => {
@@ -587,13 +850,73 @@ export const MintPhotoScreen = () => {
     };
   }, []);
 
+  const copyToClipboard = useCallback(async (text: string, label: string) => {
+    try {
+      await Clipboard.setStringAsync(text);
+      Alert.alert("Copied!", `${label} copied to clipboard.`);
+    } catch (error) {
+      Alert.alert("Error", "Failed to copy to clipboard.");
+    }
+  }, []);
+
+  const handleMintCoin = useCallback(async () => {
+    if (!smartAccount || !snapshot.context.metadataUri) {
+      setMintError('Missing smart account or metadata URI');
+      return;
+    }
+
+    setMintError(undefined);
+
+    try {
+      // Parse filename to create symbol (remove extension)
+      const fileName = snapshot.context.downloadingFile?.name || '';
+      const symbolFromFile = fileName.replace(/\.[^/.]+$/, '').toUpperCase();
+      const randomNumber = Math.floor(1000 + Math.random() * 9000);
+      const symbol = symbolFromFile || `PHOTO-${randomNumber}`;
+
+      const args = {
+        creator: smartAccount as Address,
+        name: "digicam.eth photo",
+        symbol: symbol,
+        metadata: { type: "RAW_URI" as const, uri: snapshot.context.metadataUri },
+        currency: CreateConstants.ContentCoinCurrencies.ZORA,
+        chainId: base.id,
+        startingMarketCap: CreateConstants.StartingMarketCaps.LOW,
+      };
+
+      console.log('Creating coin with args:', args);
+      const calls = await createCoinCall(args);
+
+      console.log('Sending user operation with calls:', calls);
+
+      // Send user operation (only use first call)
+      await sendUserOperation({
+        evmSmartAccount: smartAccount,
+        network: "base",
+        useCdpPaymaster: true,
+        calls: [{
+          to: calls[0].to as Address,
+          data: calls[0].data as `0x${string}`,
+          value: calls[0].value || 0n,
+        }],
+      });
+    } catch (error: any) {
+      const errorMessage = error?.message || error?.toString() || 'Failed to mint coin';
+      console.error('Error creating coin:', errorMessage);
+      setMintError(errorMessage);
+    }
+  }, [smartAccount, snapshot.context.metadataUri, sendUserOperation, setMintError]);
+
   const styles = StyleSheet.create({
     container: {
       flex: 1,
+      backgroundColor: colors.background,
+    },
+    contentContainer: {
+      flexGrow: 1,
       justifyContent: 'center',
       alignItems: 'center',
       padding: 20,
-      backgroundColor: colors.background,
     },
     loadingContainer: {
       alignItems: 'center',
@@ -670,10 +993,48 @@ export const MintPhotoScreen = () => {
       borderWidth: 1,
       borderColor: colors.border,
     },
+    walletContainer: {
+      width: '100%',
+      alignSelf: 'stretch',
+      marginBottom: 16,
+      padding: 12,
+      backgroundColor: colors.cardBackground,
+      borderRadius: 8,
+      borderWidth: 1,
+      borderColor: colors.border,
+    },
+    walletLabel: {
+      fontSize: 12,
+      color: colors.textSecondary,
+      marginBottom: 4,
+    },
+    walletAddressRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+    },
+    walletAddress: {
+      fontSize: 14,
+      fontFamily: 'monospace',
+      color: colors.text,
+      flex: 1,
+    },
+    copyButton: {
+      marginLeft: 8,
+      paddingHorizontal: 12,
+      paddingVertical: 6,
+      backgroundColor: colors.accent,
+      borderRadius: 4,
+    },
+    copyButtonText: {
+      color: '#ffffff',
+      fontSize: 12,
+      fontWeight: '600',
+    },
   });
 
   return (
-    <View style={styles.container}>
+    <ScrollView style={styles.container} contentContainerStyle={styles.contentContainer}>
       {snapshot.value === 'CheckingBluetooth' && (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={colors.accent} />
@@ -716,7 +1077,10 @@ export const MintPhotoScreen = () => {
           {snapshot.matches('DeviceConnected.WaitingForUserInput') && (
             <View style={styles.successContainer}>
               <Text style={styles.successText}>✓ Connected to {snapshot.context.deviceName}!</Text>
-              <Button onPress={() => send({ type: 'start' })} title="Start Photo Transfer" />
+              <Button
+                onPress={() => send({ type: 'start', creatorAddress: smartAccount || CREATOR_ADDRESS })}
+                title="Start Photo Transfer"
+              />
             </View>
           )}
 
@@ -855,8 +1219,53 @@ export const MintPhotoScreen = () => {
           )}
 
           {snapshot.matches('DeviceConnected.FileDownloaded') && (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color={colors.accent} />
+              <Text style={styles.loadingText}>✓ Photo Downloaded!</Text>
+              <Text style={styles.loadingSubtext}>Preparing for upload...</Text>
+            </View>
+          )}
+
+          {snapshot.matches('DeviceConnected.SendingSleepBeforeUpload') && (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color={colors.accent} />
+              <Text style={styles.loadingText}>Preparing SD card for upload...</Text>
+              <Text style={styles.loadingSubtext}>Sending SLEEP command</Text>
+            </View>
+          )}
+
+          {snapshot.matches('DeviceConnected.AwaitingSleepResponseBeforeUpload') && (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color={colors.accent} />
+              <Text style={styles.loadingText}>Waiting for SD card response...</Text>
+              <Text style={styles.loadingSubtext}>Confirming sleep mode</Text>
+            </View>
+          )}
+
+          {snapshot.matches('DeviceConnected.ReadyToUpload') && (
             <View style={styles.successContainer}>
-              <Text style={styles.successText}>✓ Photo Downloaded!</Text>
+              <Text style={styles.successText}>✓ Ready to Upload!</Text>
+              {snapshot.context.downloadingFile && (
+                <Text style={styles.loadingSubtext}>{snapshot.context.downloadingFile.name}</Text>
+              )}
+              {snapshot.context.localFileUri && (
+                <Image
+                  source={{ uri: snapshot.context.localFileUri }}
+                  style={styles.downloadedImage}
+                  resizeMode="cover"
+                />
+              )}
+              <Button
+                onPress={() => send({ type: 'generateMetadata' })}
+                title="Upload Image to IPFS"
+              />
+            </View>
+          )}
+
+          {snapshot.matches('DeviceConnected.UploadingImage') && (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color={colors.accent} />
+              <Text style={styles.loadingText}>Uploading image to IPFS...</Text>
               {snapshot.context.downloadingFile && (
                 <Text style={styles.loadingSubtext}>{snapshot.context.downloadingFile.name}</Text>
               )}
@@ -869,8 +1278,136 @@ export const MintPhotoScreen = () => {
               )}
             </View>
           )}
+
+          {snapshot.matches('DeviceConnected.ImageUploadFailed') && (
+            <View style={styles.errorContainer}>
+              <Text style={styles.errorText}>Image Upload Failed</Text>
+              {snapshot.context.downloadingFile && (
+                <Text style={{ color: colors.text }}>{snapshot.context.downloadingFile.name}</Text>
+              )}
+              {snapshot.context.error && (
+                <Text style={styles.errorDetail}>{snapshot.context.error}</Text>
+              )}
+              {snapshot.context.localFileUri && (
+                <Image
+                  source={{ uri: snapshot.context.localFileUri }}
+                  style={styles.downloadedImage}
+                  resizeMode="cover"
+                />
+              )}
+            </View>
+          )}
+
+          {snapshot.matches('DeviceConnected.ImageUploaded') && (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color={colors.accent} />
+              <Text style={styles.loadingText}>✓ Image Uploaded to IPFS!</Text>
+              <Text style={styles.loadingSubtext}>Preparing metadata...</Text>
+            </View>
+          )}
+
+          {snapshot.matches('DeviceConnected.GeneratingMetadata') && (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color={colors.accent} />
+              <Text style={styles.loadingText}>Generating Zora metadata...</Text>
+              {snapshot.context.downloadingFile && (
+                <Text style={styles.loadingSubtext}>{snapshot.context.downloadingFile.name}</Text>
+              )}
+            </View>
+          )}
+
+          {snapshot.matches('DeviceConnected.MetadataGenerationFailed') && (
+            <View style={styles.errorContainer}>
+              <Text style={styles.errorText}>Metadata Generation Failed</Text>
+              {snapshot.context.downloadingFile && (
+                <Text style={{ color: colors.text }}>{snapshot.context.downloadingFile.name}</Text>
+              )}
+              {snapshot.context.error && (
+                <Text style={styles.errorDetail}>{snapshot.context.error}</Text>
+              )}
+            </View>
+          )}
+
+          {snapshot.matches('DeviceConnected.MetadataGenerated') && (
+            <View style={styles.successContainer}>
+              <Text style={styles.successText}>✓ Metadata Uploaded to IPFS!</Text>
+              {snapshot.context.downloadingFile && (
+                <Text style={styles.loadingSubtext}>{snapshot.context.downloadingFile.name}</Text>
+              )}
+
+              {/* Wallet Address */}
+              {smartAccount && (
+                <View style={styles.walletContainer}>
+                  <Text style={styles.walletLabel}>Wallet Address</Text>
+                  <View style={styles.walletAddressRow}>
+                    <Text style={styles.walletAddress} numberOfLines={1}>
+                      {smartAccount}
+                    </Text>
+                    <TouchableOpacity
+                      style={styles.copyButton}
+                      onPress={() => copyToClipboard(smartAccount, "Wallet Address")}
+                    >
+                      <Text style={styles.copyButtonText}>Copy</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
+
+              {snapshot.context.localFileUri && (
+                <Image
+                  source={{ uri: snapshot.context.localFileUri }}
+                  style={styles.downloadedImage}
+                  resizeMode="cover"
+                />
+              )}
+              {snapshot.context.imageIpfsUri && (
+                <Text style={{ ...styles.loadingSubtext, marginTop: 8 }}>
+                  Image: {snapshot.context.imageIpfsUri}
+                </Text>
+              )}
+              {snapshot.context.metadataUri && (
+                <Text style={{ ...styles.loadingSubtext, marginTop: 8 }}>
+                  Metadata: {snapshot.context.metadataUri}
+                </Text>
+              )}
+
+              {/* Mint Coin Button */}
+              <View style={{ marginTop: 16, width: '100%' }}>
+                <Button
+                  onPress={handleMintCoin}
+                  title={txStatus === 'pending' ? 'Minting...' : 'Mint Coin on Zora'}
+                  disabled={txStatus === 'pending'}
+                />
+              </View>
+
+              {/* Transaction Status */}
+              {txStatus === 'pending' && (
+                <View style={{ marginTop: 12, alignItems: 'center' }}>
+                  <ActivityIndicator size="small" color={colors.accent} />
+                  <Text style={styles.loadingSubtext}>Minting coin...</Text>
+                </View>
+              )}
+
+              {txStatus === 'success' && txData?.transactionHash && (
+                <View style={{ marginTop: 12, width: '100%' }}>
+                  <Text style={styles.successText}>✓ Coin Minted!</Text>
+                  <Text style={styles.loadingSubtext}>
+                    Tx: {txData.transactionHash.slice(0, 10)}...{txData.transactionHash.slice(-8)}
+                  </Text>
+                </View>
+              )}
+
+              {(txError || mintError) && (
+                <View style={{ ...styles.errorContainer, marginTop: 12 }}>
+                  <Text style={styles.errorText}>
+                    Mint Failed: {mintError || txError?.message}
+                  </Text>
+                </View>
+              )}
+            </View>
+          )}
         </>
       )}
-    </View>
+    </ScrollView>
   )
 }

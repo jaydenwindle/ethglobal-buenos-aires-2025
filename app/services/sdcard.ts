@@ -80,7 +80,7 @@ export class SDCardAPI {
    * @param onProgress Callback for progress updates (0 to 1)
    * @param chunkSize Size of each chunk in bytes (default: 8192, range: 1024-32768)
    * @param maxRetries Maximum retry attempts per chunk (default: 3)
-   * @returns Local file URI on the device
+   * @returns Object containing base64Data and localUri
    */
   async downloadFileToLocal(
     path: string,
@@ -88,7 +88,7 @@ export class SDCardAPI {
     onProgress?: (progress: number, totalBytes: number, downloadedBytes: number) => void,
     chunkSize: number = 8192,
     maxRetries: number = 3
-  ): Promise<string> {
+  ): Promise<{ base64Data: string; localUri: string }> {
     const filename = path.split('/').pop() || 'download';
     const localUri = `${FileSystem.cacheDirectory}${filename}`;
 
@@ -209,7 +209,7 @@ export class SDCardAPI {
       logger.success(`Downloaded ${filename} (${duration}ms)`);
       logger.data(`Saved to: ${localUri}`);
 
-      return localUri;
+      return { base64Data, localUri };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Unknown error";
       logger.error(`Error downloading file: ${errorMessage}`);
