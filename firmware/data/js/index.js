@@ -12,8 +12,8 @@ if (navigator.userAgent.indexOf('MSIE') !== -1
 function addDebugLog(message) {
     var timestamp = new Date().toLocaleTimeString();
     debugLogs.push('[' + timestamp + '] ' + message);
-    if (debugLogs.length > 30) {
-        debugLogs.shift(); // Keep only last 30 logs
+    if (debugLogs.length > 20) {
+        debugLogs.shift(); // Keep only last 20 logs
     }
     updateDebugPanel();
 }
@@ -21,11 +21,10 @@ function addDebugLog(message) {
 function updateDebugPanel() {
     var panel = document.getElementById('debugPanel');
     var info = document.getElementById('debugInfo');
-    // Always show debug panel
-    panel.style.display = 'block';
-    info.textContent = debugLogs.join('\n');
-    // Auto-scroll to bottom
-    info.scrollTop = info.scrollHeight;
+    if (debugLogs.length > 0) {
+        panel.style.display = 'block';
+        info.textContent = debugLogs.join('\n');
+    }
 }
 
 function clearDebugLog() {
@@ -33,7 +32,136 @@ function clearDebugLog() {
     document.getElementById('debugPanel').style.display = 'none';
 }
 
-// Status functions removed to reduce page load and improve performance
+function updateWifiStatus() {
+    var xhr = new XMLHttpRequest();
+    xhr.timeout = 5000; // 5 second timeout
+    
+    xhr.onreadystatechange = function () {
+        if (xhr.readyState == 4) {
+            var statusDiv = document.getElementById('wifiStatus');
+            var statusText = document.getElementById('wifiStatusText');
+            
+            if (xhr.status == 200) {
+                var resp = xhr.responseText;
+                addDebugLog('WiFi status: ' + resp);
+                
+                if (resp.startsWith('WIFI:')) {
+                    var status = resp.substring(5); // Remove "WIFI:" prefix
+                    
+                    if (status.includes('Connected:')) {
+                        var ip = status.split(':')[1];
+                        statusText.innerHTML = 'Connected - IP: ' + ip;
+                        statusDiv.className = 'alert alert-success';
+                    } else if (status.includes('Connecting')) {
+                        statusText.innerHTML = 'Connecting...';
+                        statusDiv.className = 'alert alert-warning';
+                    } else if (status.includes('Failed')) {
+                        statusText.innerHTML = 'Connection Failed - AP Mode';
+                        statusDiv.className = 'alert alert-danger';
+                    } else if (status.includes('AP_Mode')) {
+                        statusText.innerHTML = 'AP Mode - SSID: PERMA';
+                        statusDiv.className = 'alert alert-info';
+                    } else {
+                        statusText.innerHTML = 'Unknown';
+                        statusDiv.className = 'alert alert-secondary';
+                    }
+                } else {
+                    statusText.innerHTML = 'Unknown';
+                    statusDiv.className = 'alert alert-secondary';
+                }
+            } else {
+                addDebugLog('WiFi status error: HTTP ' + xhr.status);
+                statusText.innerHTML = 'Cannot reach device';
+                statusDiv.className = 'alert alert-warning';
+            }
+        }
+    };
+    
+    xhr.ontimeout = function() {
+        addDebugLog('WiFi status timeout');
+        var statusDiv = document.getElementById('wifiStatus');
+        var statusText = document.getElementById('wifiStatusText');
+        statusText.innerHTML = 'Request timeout';
+        statusDiv.className = 'alert alert-warning';
+    };
+    
+    xhr.onerror = function() {
+        addDebugLog('WiFi status connection error');
+        var statusDiv = document.getElementById('wifiStatus');
+        var statusText = document.getElementById('wifiStatusText');
+        statusText.innerHTML = 'Connection error';
+        statusDiv.className = 'alert alert-warning';
+    };
+    
+    try {
+        xhr.open('GET', '/wifistatus', true);
+        xhr.send(null);
+    } catch(e) {
+        addDebugLog('WiFi status exception: ' + e.message);
+    }
+}
+
+function updateBTStatus() {
+    var xhr = new XMLHttpRequest();
+    xhr.timeout = 5000;
+    
+    xhr.onreadystatechange = function () {
+        if (xhr.readyState == 4) {
+            var statusDiv = document.getElementById('btStatus');
+            var statusText = document.getElementById('btStatusText');
+            
+            if (xhr.status == 200) {
+                var resp = xhr.responseText;
+                addDebugLog('BT status: ' + resp);
+                
+                if (resp.startsWith('BT:')) {
+                    var status = resp.substring(3);
+                    
+                    if (status === 'Connected') {
+                        statusText.innerHTML = 'Connected';
+                        statusDiv.className = 'alert alert-success';
+                    } else if (status === 'Ready') {
+                        statusText.innerHTML = 'Ready (No client)';
+                        statusDiv.className = 'alert alert-info';
+                    } else if (status === 'Disabled') {
+                        statusText.innerHTML = 'Disabled';
+                        statusDiv.className = 'alert alert-secondary';
+                    } else {
+                        statusText.innerHTML = 'Unknown';
+                        statusDiv.className = 'alert alert-secondary';
+                    }
+                } else {
+                    statusText.innerHTML = 'Unknown';
+                    statusDiv.className = 'alert alert-secondary';
+                }
+            } else {
+                statusText.innerHTML = 'Error';
+                statusDiv.className = 'alert alert-warning';
+            }
+        }
+    };
+    
+    xhr.ontimeout = function() {
+        var statusDiv = document.getElementById('btStatus');
+        var statusText = document.getElementById('btStatusText');
+        statusText.innerHTML = 'Timeout';
+        statusDiv.className = 'alert alert-warning';
+    };
+    
+    xhr.onerror = function() {
+        var statusDiv = document.getElementById('btStatus');
+        var statusText = document.getElementById('btStatusText');
+        statusText.innerHTML = 'Error';
+        statusDiv.className = 'alert alert-warning';
+    };
+    
+    try {
+        xhr.open('GET', '/btstatus', true);
+        xhr.send(null);
+    } catch(e) {
+        addDebugLog('BT status exception: ' + e.message);
+    }
+}
 
 function httpPost(filename, data, type) {
     xmlHttp = new XMLHttpRequest();
@@ -44,69 +172,39 @@ function httpPost(filename, data, type) {
     xmlHttp.send(formData);
 }
 
-function httpGetList(path, offset, limit) {
-    offset = offset || 0;
-    limit = limit || 20; // Reduced default for slower devices
-    
-    addDebugLog('=== Starting file list request ===');
-    addDebugLog('Path: ' + path + ', Offset: ' + offset + ', Limit: ' + limit);
-    addDebugLog('Initializing SD card... (this may take 5-10 seconds)');
-    
-    // Show loading message
-    $("#filelistbox").html("<div style='padding: 20px; text-align: center; color: #666;'><strong>Loading files from SD card...</strong><br><small>Initializing SD card, please wait...</small></div>");
-    
-    var startTime = Date.now();
-    
+function httpGetList(path) {
+    addDebugLog('Requesting file list for: ' + path);
     xmlHttp = new XMLHttpRequest();
-    xmlHttp.timeout = 30000; // 30 second timeout (increased for slow SD cards)
+    xmlHttp.timeout = 10000; // 10 second timeout
     
     xmlHttp.onload = function () {
         sdbusy = false;
     }
     
     xmlHttp.onreadystatechange = function () {
-        if (xmlHttp.readyState == 1) {
-            addDebugLog('Connection opened');
-        } else if (xmlHttp.readyState == 2) {
-            addDebugLog('Request sent, waiting for response...');
-        } else if (xmlHttp.readyState == 3) {
-            addDebugLog('Receiving data...');
-        } else if (xmlHttp.readyState == 4) {
-            var elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-            addDebugLog('Request completed in ' + elapsed + ' seconds');
-            
+        if (xmlHttp.readyState == 4) {
             var resp = xmlHttp.responseText;
-            addDebugLog('HTTP Status: ' + xmlHttp.status);
+            addDebugLog('List response status: ' + xmlHttp.status);
             addDebugLog('Response length: ' + resp.length + ' chars');
-            if (resp.length > 0) {
-                addDebugLog('Response preview: ' + resp.substring(0, 100));
-            } else {
-                addDebugLog('Response is empty!');
-            }
+            addDebugLog('Response preview: ' + resp.substring(0, 100));
 
             if (xmlHttp.status == 200) {
                 if (resp.startsWith('LIST:')) {
                     if(resp.includes('SDBUSY')) {
                         addDebugLog('SD card busy');
-                        $("#filelistbox").html("<div style='padding: 20px; text-align: center; color: #ff6b6b;'><strong>SD Card Busy</strong><br>Printer is using the SD card. Wait 10 seconds and try again.</div>");
+                        alert("Printer is busy, wait for 10s and try again");
                         sdbusy = false;
-                    } else if(resp.includes('SD_INIT_FAILED')) {
-                        addDebugLog('SD card initialization failed');
-                        $("#filelistbox").html("<div style='padding: 20px; text-align: center; color: #ff6b6b;'><strong>SD Card Error</strong><br>Failed to initialize SD card. Please check:<br>• SD card is inserted<br>• SD card is formatted (FAT32)<br>• SD card is not corrupted</div>");
-                        sdbusy = false;
-                    } else if(resp.includes('BADPATH')) {
-                        addDebugLog('Bad path: ' + resp);
-                        $("#filelistbox").html("<div style='padding: 20px; text-align: center; color: #ff6b6b;'><strong>Path Error</strong><br>Cannot access SD card path. Please check:<br>• SD card is inserted<br>• SD card is readable<br>• Try refreshing the page</div>");
-                        sdbusy = false;
-                    } else if(resp.includes('BADARGS') || resp.includes('NOTDIR')) {
+                    } else if(resp.includes('BADARGS') || 
+                                resp.includes('BADPATH') ||
+                                resp.includes('NOTDIR')) {
                         addDebugLog('Bad request: ' + resp);
-                        $("#filelistbox").html("<div style='padding: 20px; text-align: center; color: #ff6b6b;'><strong>Request Error</strong><br>" + resp + "</div>");
+                        alert("Bad args, please try again or reset the module");
                         sdbusy = false;
                     }
                 } else {
                     // Valid JSON response
                     addDebugLog('Parsing JSON response...');
-                    onHttpList(resp, path);
+                    onHttpList(resp);
                 }
             } else {
                 addDebugLog('HTTP error: ' + xmlHttp.status);
@@ -117,23 +215,21 @@ function httpGetList(path, offset, limit) {
     };
     
     xmlHttp.ontimeout = function() {
-        var elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-        addDebugLog('❌ REQUEST TIMEOUT after ' + elapsed + ' seconds');
-        addDebugLog('SD card initialization took too long');
-        $("#filelistbox").html("<div style='padding: 20px; text-align: center; color: #ff6b6b;'><strong>Request Timeout</strong><br>The SD card took more than 30 seconds to respond.<br><br>Possible causes:<br>• SD card is very slow<br>• SD card has power issues<br>• SD card is not properly inserted<br><br>Check the debug log below for details.</div>");
+        addDebugLog('Request timeout');
+        alert("Request timeout - SD card may be busy");
+        $("#filelistbox").html("<div style='padding: 20px; text-align: center; color: red;'>Request timeout</div>");
         sdbusy = false;
     };
     
     xmlHttp.onerror = function() {
-        var elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-        addDebugLog('❌ CONNECTION ERROR after ' + elapsed + ' seconds');
-        addDebugLog('Cannot connect to device');
-        $("#filelistbox").html("<div style='padding: 20px; text-align: center; color: #ff6b6b;'><strong>Connection Error</strong><br>Cannot connect to device.<br><br>Check:<br>• WiFi connection<br>• Device is powered on<br>• Correct IP address<br><br>See debug log below for details.</div>");
+        addDebugLog('Request error');
+        alert("Error loading file list");
+        $("#filelistbox").html("<div style='padding: 20px; text-align: center; color: red;'>Connection error</div>");
         sdbusy = false;
     };
     
     try {
-        xmlHttp.open('GET', '/ls?dir=' + path + '&offset=' + offset + '&limit=' + limit, true);
+        xmlHttp.open('GET', '/ls?dir=' + path, true);
         xmlHttp.send(null);
     } catch(e) {
         addDebugLog('Exception: ' + e.message);
@@ -426,14 +522,14 @@ function loadFolder(path, toggleElement) {
         requestPath = '/' + requestPath;
     }
     
-    // Load folder contents with pagination support
+    // Load folder contents
     addDebugLog('Loading folder: ' + requestPath);
     folderContents.innerHTML = '<div style="padding: 10px 10px 10px ' + ((level + 1) * 20 + 10) + 'px; color: #999;">Loading...</div>';
     folderContents.style.display = 'block';
     toggleElement.textContent = '▼';
     
     var xhr = new XMLHttpRequest();
-    xhr.timeout = 15000; // Increased timeout
+    xhr.timeout = 10000;
     
     xhr.onreadystatechange = function() {
         if (xhr.readyState == 4) {
@@ -448,9 +544,7 @@ function loadFolder(path, toggleElement) {
                 }
                 
                 try {
-                    var data = JSON.parse(resp);
-                    var items = data.items || data; // Support both old and new format
-                    
+                    var items = JSON.parse(resp);
                     addDebugLog('Loaded ' + items.length + ' items from ' + requestPath);
                     
                     if (items.length === 0) {
@@ -460,15 +554,6 @@ function loadFolder(path, toggleElement) {
                         for (var i = 0; i < items.length; i++) {
                             html += createFileListItem(items[i], level + 1);
                         }
-                        
-                        // Add "Load More" button if there are more items
-                        if (data.hasMore) {
-                            var nextOffset = data.offset + data.limit;
-                            html += '<div style="padding: 10px 10px 10px ' + ((level + 1) * 20 + 10) + 'px;">';
-                            html += '<button class="btn-small" onclick="loadMoreInFolder(\'' + requestPath + '\', ' + nextOffset + ', this)">Load More (' + (data.total - nextOffset) + ' remaining)</button>';
-                            html += '</div>';
-                        }
-                        
                         folderContents.innerHTML = html;
                     }
                     folderContents.setAttribute('data-loaded', 'true');
@@ -486,7 +571,7 @@ function loadFolder(path, toggleElement) {
     
     xhr.ontimeout = function() {
         addDebugLog('Folder load timeout');
-        folderContents.innerHTML = '<div style="padding: 10px; color: red;">Timeout - Try refreshing</div>';
+        folderContents.innerHTML = '<div style="padding: 10px; color: red;">Timeout</div>';
     };
     
     xhr.onerror = function() {
@@ -494,17 +579,15 @@ function loadFolder(path, toggleElement) {
         folderContents.innerHTML = '<div style="padding: 10px; color: red;">Connection error</div>';
     };
     
-    xhr.open('GET', '/ls?dir=' + encodeURIComponent(requestPath) + '&limit=20', true);
+    xhr.open('GET', '/ls?dir=' + encodeURIComponent(requestPath), true);
     xhr.send(null);
 }
 
 
 
-function onHttpList(response, path) {
+function onHttpList(response) {
     try {
-        var data = JSON.parse(response);
-        var list = data.items || data; // Support both old array format and new paginated format
-        
+        var list = JSON.parse(response);
         addDebugLog('Parsed ' + list.length + ' items');
         
         if (list.length === 0) {
@@ -517,100 +600,12 @@ function onHttpList(response, path) {
             html += createFileListItem(list[i]);
         }
         
-        // Add "Load More" button if there are more items
-        if (data.hasMore) {
-            var nextOffset = data.offset + data.limit;
-            html += '<div style="padding: 20px; text-align: center; border-top: 1px solid #ddd; margin-top: 10px;">';
-            html += '<button class="btn-small" style="padding: 10px 20px; font-size: 1rem;" onclick="loadMoreFiles(\'' + (path || '/') + '\', ' + nextOffset + ')">Load More Files (' + (data.total - nextOffset) + ' remaining)</button>';
-            html += '<div style="margin-top: 10px; color: #666; font-size: 0.9rem;">Showing ' + (data.offset + list.length) + ' of ' + data.total + ' items</div>';
-            html += '</div>';
-        } else if (data.total) {
-            html += '<div style="padding: 10px; text-align: center; color: #666; font-size: 0.9rem; border-top: 1px solid #ddd; margin-top: 10px;">Showing all ' + data.total + ' items</div>';
-        }
-        
         $("#filelistbox").html(html);
         addDebugLog('File list rendered successfully');
     } catch (e) {
         addDebugLog('Error: ' + e.message);
         $("#filelistbox").html("<div style='padding: 20px; text-align: center; color: red;'>Error: " + e.message + "</div>");
     }
-}
-
-function loadMoreFiles(path, offset) {
-    if(sdbusy) {
-        alert("SD card is busy");
-        return;
-    }
-    sdbusy = true;
-    
-    addDebugLog('Loading more files from: ' + path + ' at offset ' + offset);
-    
-    var xhr = new XMLHttpRequest();
-    xhr.timeout = 15000;
-    
-    xhr.onreadystatechange = function() {
-        if (xhr.readyState == 4) {
-            sdbusy = false;
-            
-            if (xhr.status == 200) {
-                var resp = xhr.responseText;
-                
-                try {
-                    var data = JSON.parse(resp);
-                    var list = data.items || data;
-                    
-                    addDebugLog('Loaded ' + list.length + ' more items');
-                    
-                    // Find the "Load More" button and replace it with new items
-                    var filelistbox = document.getElementById('filelistbox');
-                    var loadMoreDiv = filelistbox.querySelector('div[style*="border-top"]');
-                    
-                    if (loadMoreDiv) {
-                        loadMoreDiv.remove();
-                    }
-                    
-                    // Append new items
-                    var html = "";
-                    for (var i = 0; i < list.length; i++) {
-                        html += createFileListItem(list[i]);
-                    }
-                    
-                    // Add new "Load More" button if needed
-                    if (data.hasMore) {
-                        var nextOffset = data.offset + data.limit;
-                        html += '<div style="padding: 20px; text-align: center; border-top: 1px solid #ddd; margin-top: 10px;">';
-                        html += '<button class="btn-small" style="padding: 10px 20px; font-size: 1rem;" onclick="loadMoreFiles(\'' + path + '\', ' + nextOffset + ')">Load More Files (' + (data.total - nextOffset) + ' remaining)</button>';
-                        html += '<div style="margin-top: 10px; color: #666; font-size: 0.9rem;">Showing ' + (data.offset + list.length) + ' of ' + data.total + ' items</div>';
-                        html += '</div>';
-                    } else if (data.total) {
-                        html += '<div style="padding: 10px; text-align: center; color: #666; font-size: 0.9rem; border-top: 1px solid #ddd; margin-top: 10px;">Showing all ' + data.total + ' items</div>';
-                    }
-                    
-                    filelistbox.insertAdjacentHTML('beforeend', html);
-                    
-                } catch (e) {
-                    addDebugLog('Error loading more: ' + e.message);
-                    alert('Error loading more files: ' + e.message);
-                }
-            } else {
-                addDebugLog('HTTP error: ' + xhr.status);
-                alert('Error loading more files (HTTP ' + xhr.status + ')');
-            }
-        }
-    };
-    
-    xhr.ontimeout = function() {
-        sdbusy = false;
-        alert('Request timeout');
-    };
-    
-    xhr.onerror = function() {
-        sdbusy = false;
-        alert('Connection error');
-    };
-    
-    xhr.open('GET', '/ls?dir=' + encodeURIComponent(path) + '&offset=' + offset + '&limit=20', true);
-    xhr.send(null);
 }
 
 function updateList() {
@@ -633,8 +628,6 @@ function loadImageProgressive(filename, previewDiv) {
     var chunkSize = 16384 * 4; // 16KB chunks - optimal for ESP32
     var imageElement = null;
     var currentBlobUrl = null;
-    var lastUpdateChunk = -1;
-    var updateInterval = 3; // Update image every N chunks to reduce flashing
     var chunks = [];
     var currentChunk = 0;
     var totalChunks = null;
@@ -672,48 +665,29 @@ function loadImageProgressive(filename, previewDiv) {
             offset += chunks[i].length;
         }
         
-        // Create blob and load image
+        // Create blob and update image
         var blob = new Blob([combined], { type: getContentType(filename) });
         var newBlobUrl = URL.createObjectURL(blob);
         
-        // Create a temporary image to load the partial data
-        var tempImg = new Image();
-        tempImg.onload = function() {
-            if (!imageElement) {
-                // Create image element on first successful load
-                imageElement = document.createElement('img');
-                imageElement.style.maxWidth = '100%';
-                imageElement.style.maxHeight = '600px';
-                imageElement.style.borderRadius = '4px';
-                imageElement.style.boxShadow = '0 2px 8px rgba(0,0,0,0.1)';
-                imageElement.style.display = 'block';
-                imageElement.style.opacity = '0';
-                imageElement.style.transition = 'opacity 0.3s ease-in-out';
-                imgContainer.innerHTML = '';
-                imgContainer.appendChild(imageElement);
-                
-                // Fade in on first load
-                setTimeout(function() {
-                    if (imageElement) imageElement.style.opacity = '1';
-                }, 50);
-            }
-            
-            // Update the displayed image smoothly
-            imageElement.src = newBlobUrl;
-            
-            // Revoke old blob URL to free memory
-            if (currentBlobUrl && currentBlobUrl !== newBlobUrl) {
-                URL.revokeObjectURL(currentBlobUrl);
-            }
-            currentBlobUrl = newBlobUrl;
-        };
+        if (!imageElement) {
+            // Create image element on first chunk
+            imageElement = document.createElement('img');
+            imageElement.style.maxWidth = '100%';
+            imageElement.style.maxHeight = '600px';
+            imageElement.style.borderRadius = '4px';
+            imageElement.style.boxShadow = '0 2px 8px rgba(0,0,0,0.1)';
+            imgContainer.innerHTML = '';
+            imgContainer.appendChild(imageElement);
+        }
         
-        tempImg.onerror = function() {
-            // Not enough data yet to render, that's ok
-            URL.revokeObjectURL(newBlobUrl);
-        };
+        // Revoke old blob URL to free memory
+        if (currentBlobUrl) {
+            URL.revokeObjectURL(currentBlobUrl);
+        }
+        currentBlobUrl = newBlobUrl;
         
-        tempImg.src = newBlobUrl;
+        // Update image source - browser will progressively render
+        imageElement.src = newBlobUrl;
     }
     
     function loadNextChunk() {
@@ -741,16 +715,8 @@ function loadImageProgressive(filename, previewDiv) {
                 if (progressBar) progressBar.style.width = progress + '%';
                 if (statusText) statusText.textContent = 'Chunk ' + (currentChunk + 1) + (totalChunks ? ' of ' + totalChunks : '') + ' (' + Math.round(progress) + '%)';
                 
-                // Update image display progressively (but not every single chunk to reduce flashing)
-                // Update on first chunk, then every N chunks, and always on last chunk
-                var shouldUpdate = (currentChunk === 0) || 
-                                 ((currentChunk - lastUpdateChunk) >= updateInterval) ||
-                                 (totalChunks && currentChunk + 1 >= totalChunks);
-                
-                if (shouldUpdate) {
-                    updateImageDisplay();
-                    lastUpdateChunk = currentChunk;
-                }
+                // Update image display progressively
+                updateImageDisplay();
                 
                 currentChunk++;
                 

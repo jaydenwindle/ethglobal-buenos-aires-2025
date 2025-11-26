@@ -6,6 +6,7 @@
 #include "serial.h"
 #include "network.h"
 #include "config.h"
+#include "bluetooth.h"
 
 const char* PARAM_MESSAGE = "message";
 uint8_t printer_sd_type = 0;
@@ -17,12 +18,37 @@ FSWebServer::FSWebServer(uint16_t port) : AsyncWebServer(port) {}
 void FSWebServer::begin(FS* fs) {
     _fs = fs;
 
+    // Configure server timeouts for large file transfers
+    // Default timeout is too short for files > 1MB
     AsyncWebServer::begin();
+    
+    // Note: AsyncWebServer doesn't have a direct timeout setting
+    // The timeout is controlled by AsyncTCP library
+    // We'll handle this at the TCP level in platformio.ini
 
     server.on("/relinquish", HTTP_GET, [this](AsyncWebServerRequest *request) {
   		this->onHttpRelinquish(request);
   	});
 
+    // Linux-style command endpoints
+    server.on("/ls", HTTP_GET, [this](AsyncWebServerRequest *request) {
+  		this->onHttpList(request);
+  	});
+
+    server.on("/rm", HTTP_GET, [this](AsyncWebServerRequest *request) {
+  		this->onHttpDelete(request);
+  	});
+
+  	server.on("/cat", HTTP_GET, [this](AsyncWebServerRequest *request) {
+  		this->onHttpDownload(request);
+  	});
+
+  	server.on("/dd", HTTP_POST, [](AsyncWebServerRequest *request) { 
+  	  request->send(200, "text/plain", ""); },[this](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {
+		  this->onHttpFileUpload(request, filename, index, data, len, final);
+	  });
+
+    // Legacy endpoints for backward compatibility
     server.on("/list", HTTP_GET, [this](AsyncWebServerRequest *request) {
   		this->onHttpList(request);
   	});
@@ -58,6 +84,10 @@ void FSWebServer::begin(FS* fs) {
 
     server.on("/wifilist", HTTP_GET, [this](AsyncWebServerRequest *request) {
   		this->onHttpWifiList(request);
+  	});
+
+    server.on("/btstatus", HTTP_GET, [this](AsyncWebServerRequest *request) {
+  		this->onHttpBTStatus(request);
   	});
 
 	  server.onNotFound([this](AsyncWebServerRequest *request) {
@@ -104,19 +134,25 @@ void FSWebServer::onHttpWifiStatus(AsyncWebServerRequest *request) {
   DEBUG_LOG("onHttpWifiStatus\n");
 
   String resp = "WIFI:";
-  switch(network.status()) {
-    case 1:
-      resp += "Failed";
-    break;
-    case 2:
-      resp += "Connecting";
-    break;
-    case 3:
-      IPAddress ip = WiFi.localIP();
-      resp += "Connected:";
-      for (int i=0; i<4; i++)
-        resp += i  ? "." + String(ip[i]) : String(ip[i]);
-    break;
+  
+  // Check if in AP mode or STA mode
+  if (!network.isSTAmode()) {
+    resp += "AP_Mode";
+  } else {
+    switch(network.status()) {
+      case 1:
+        resp += "Failed";
+      break;
+      case 2:
+        resp += "Connecting";
+      break;
+      case 3:
+        IPAddress ip = WiFi.localIP();
+        resp += "Connected:";
+        for (int i=0; i<4; i++)
+          resp += i  ? "." + String(ip[i]) : String(ip[i]);
+      break;
+    }
   }
   request->send(200, "text/plain", resp);
 }
@@ -175,6 +211,22 @@ void FSWebServer::onHttpWifiScan(AsyncWebServerRequest * request) {
     network.doScan();
     request->send(200, "text/json", "ok");
     return;
+}
+
+void FSWebServer::onHttpBTStatus(AsyncWebServerRequest *request) {
+  DEBUG_LOG("onHttpBTStatus\n");
+
+  String resp = "BT:";
+  
+  if (!BT.isEnabled()) {
+    resp += "Disabled";
+  } else if (BT.isConnected()) {
+    resp += "Connected";
+  } else {
+    resp += "Ready";
+  }
+  
+  request->send(200, "text/plain", resp);
 }
 
 bool FSWebServer::onHttpNotFound(AsyncWebServerRequest *request) {
@@ -240,12 +292,13 @@ void FSWebServer::onHttpRelinquish(AsyncWebServerRequest *request) {
 }
 
 void FSWebServer::onHttpDownload(AsyncWebServerRequest *request) {
-    DEBUG_LOG("onHttpDownload");
+    SERIAL_ECHOLN("=== HTTP Download Request ===");
+    DEBUG_LOG("Client: %s\n", request->client()->remoteIP().toString().c_str());
 
     switch(sdcontrol.canWeTakeControl())
     { 
       case -1: {
-        DEBUG_LOG("Printer controlling the SD card"); 
+        SERIAL_ECHOLN("ERROR: Printer controlling the SD card");
         request->send(500, "text/plain","DOWNLOAD:SDBUSY");
       }
       return;
@@ -253,21 +306,156 @@ void FSWebServer::onHttpDownload(AsyncWebServerRequest *request) {
       default: break;
     }
   
-    int params = request->params();
-    if (params == 0) {
-      DEBUG_LOG("No params");
+    // Get path parameter
+    if (!request->hasParam("path")) {
+      SERIAL_ECHOLN("ERROR: No path parameter");
       request->send(500, "text/plain","DOWNLOAD:BADARGS");
       return;
     }
-    const AsyncWebParameter* p = request->getParam((size_t)0);
-    String path = p->value();
+    String path = request->getParam("path")->value();
+    SERIAL_ECHO("Requested path: ");
+    SERIAL_ECHOLN(path.c_str());
+    
+    // Check for chunked download parameters
+    bool isChunked = request->hasParam("chunk");
+    int chunkNumber = 0;
+    int chunkSize = 16384 * 4; // Default 16KB chunks - optimal for ESP32
+    
+    if (isChunked) {
+      chunkNumber = request->getParam("chunk")->value().toInt();
+      if (request->hasParam("size")) {
+        chunkSize = request->getParam("size")->value().toInt();
+        // Limit chunk size to reasonable range
+        // if (chunkSize < 1024) chunkSize = 1024;
+        // if (chunkSize > 32768) chunkSize = 32768;
+      }
+      SERIAL_ECHO("Mode: Chunked - chunk #");
+      SERIAL_ECHO(String(chunkNumber).c_str());
+      SERIAL_ECHO(", size: ");
+      SERIAL_ECHO(String(chunkSize).c_str());
+      SERIAL_ECHOLN(" bytes");
+    } else {
+      SERIAL_ECHOLN("Mode: Full file download");
+    }
 
-    AsyncWebServerResponse *response = request->beginResponse(200);
-    response->addHeader("Connection", "close");
-    response->addHeader("Access-Control-Allow-Origin", "*");
-    if (!this->handleFileReadSD(path, request))
+    sdcontrol.takeControl();
+    SERIAL_ECHOLN("SD control acquired");
+    
+    // Open file
+    File file = SD.open(path.c_str());
+    if (!file) {
+      SERIAL_ECHO("ERROR: File not found: ");
+      SERIAL_ECHOLN(path.c_str());
+      sdcontrol.relinquishControl();
       request->send(404, "text/plain", "DOWNLOAD:FileNotFound");
-    delete response; // Free up memory!
+      return;
+    }
+    
+    if (file.isDirectory()) {
+      SERIAL_ECHOLN("ERROR: Path is a directory");
+      file.close();
+      sdcontrol.relinquishControl();
+      request->send(500, "text/plain", "DOWNLOAD:ISDIR");
+      return;
+    }
+    
+    size_t fileSize = file.size();
+    String contentType = getContentType(path, request);
+    
+    SERIAL_ECHO("File opened: ");
+    SERIAL_ECHO(String(fileSize).c_str());
+    SERIAL_ECHO(" bytes, type: ");
+    SERIAL_ECHOLN(contentType.c_str());
+    
+    if (isChunked) {
+      // Calculate chunk boundaries
+      size_t startByte = chunkNumber * chunkSize;
+      
+      if (startByte >= fileSize) {
+        // Chunk beyond file size
+        SERIAL_ECHO("ERROR: Chunk ");
+        SERIAL_ECHO(String(chunkNumber).c_str());
+        SERIAL_ECHOLN(" beyond file size");
+        file.close();
+        sdcontrol.relinquishControl();
+        request->send(416, "text/plain", "DOWNLOAD:RANGE_NOT_SATISFIABLE");
+        return;
+      }
+      
+      size_t endByte = startByte + chunkSize - 1;
+      if (endByte >= fileSize) {
+        endByte = fileSize - 1;
+      }
+      size_t actualChunkSize = endByte - startByte + 1;
+      
+      // Calculate total chunks
+      int totalChunks = (fileSize + chunkSize - 1) / chunkSize;
+      
+      SERIAL_ECHO("Sending chunk ");
+      SERIAL_ECHO(String(chunkNumber).c_str());
+      SERIAL_ECHO("/");
+      SERIAL_ECHO(String(totalChunks).c_str());
+      SERIAL_ECHO(": bytes ");
+      SERIAL_ECHO(String(startByte).c_str());
+      SERIAL_ECHO("-");
+      SERIAL_ECHO(String(endByte).c_str());
+      SERIAL_ECHO("/");
+      SERIAL_ECHOLN(String(fileSize).c_str());
+      
+      // Seek to start position
+      file.seek(startByte);
+      
+      // Create response with chunk data
+      AsyncWebServerResponse *response = request->beginResponse(
+        contentType,
+        actualChunkSize,
+        [file, actualChunkSize](uint8_t *buffer, size_t maxLen, size_t index) mutable -> size_t {
+          if (index >= actualChunkSize) {
+            return 0; // Done
+          }
+          size_t toRead = actualChunkSize - index;
+          if (toRead > maxLen) toRead = maxLen;
+          return file.read(buffer, toRead);
+        }
+      );
+      
+      // Add chunked download headers
+      response->setCode(206); // Partial Content
+      char rangeHeader[64];
+      snprintf(rangeHeader, sizeof(rangeHeader), "bytes %d-%d/%d", startByte, endByte, fileSize);
+      response->addHeader("Content-Range", rangeHeader);
+      response->addHeader("Content-Length", String(actualChunkSize));
+      response->addHeader("X-Total-Chunks", String(totalChunks));
+      response->addHeader("X-Chunk-Number", String(chunkNumber));
+      response->addHeader("Access-Control-Allow-Origin", "*");
+      response->addHeader("Access-Control-Expose-Headers", "Content-Range, X-Total-Chunks, X-Chunk-Number");
+      
+      request->send(response);
+      
+      // Cleanup happens in response callback
+      request->onDisconnect([file]() mutable {
+        file.close();
+        sdcontrol.relinquishControl();
+      });
+      
+    } else {
+      // Send entire file (original behavior)
+      SERIAL_ECHO("Sending entire file: ");
+      SERIAL_ECHO(String(fileSize).c_str());
+      SERIAL_ECHOLN(" bytes");
+      
+      AsyncWebServerResponse *response = request->beginResponse(SD, path, contentType);
+      response->addHeader("Connection", "close");
+      response->addHeader("Access-Control-Allow-Origin", "*");
+      response->addHeader("Content-Length", String(fileSize));
+      
+      request->send(response);
+      
+      file.close();
+      sdcontrol.relinquishControl();
+      SERIAL_ECHOLN("File sent, SD control released");
+    }
+    SERIAL_ECHOLN("=== Download Complete ===");
 }
 
 void FSWebServer::onHttpList(AsyncWebServerRequest * request) {
@@ -290,45 +478,101 @@ void FSWebServer::onHttpList(AsyncWebServerRequest * request) {
   }
   const AsyncWebParameter* p = request->getParam((size_t)0);
   String path = p->value();
-
-  if (path != "/" && !SD.exists((char *)path.c_str())) {
-    request->send(500, "text/plain","LIST:BADPATH");
-    return;
-  }
+  
+  DEBUG_LOG("List request for path: '%s'\n", path.c_str());
 
   sdcontrol.takeControl();
-  File dir = SD.open((char *)path.c_str());
-  path = String();
+  
+  // Ensure path starts with /
+  if (path.length() == 0 || path[0] != '/') {
+    path = "/" + path;
+  }
+  
+  DEBUG_LOG("Opening path: '%s'\n", path.c_str());
+  
+  // Try to open the directory
+  File dir = SD.open(path.c_str());
+  
+  if (!dir) {
+    DEBUG_LOG("Failed to open path: '%s'\n", path.c_str());
+    sdcontrol.relinquishControl();
+    String errorMsg = "LIST:BADPATH:" + path;
+    request->send(500, "text/plain", errorMsg);
+    return;
+  }
+  
   if (!dir.isDirectory()) {
+    DEBUG_LOG("Path is not a directory: %s\n", path.c_str());
     dir.close();
+    sdcontrol.relinquishControl();
     request->send(500, "text/plain", "LIST:NOTDIR");
     return;
   }
+
   dir.rewindDirectory();
   
-
-  String output = "[";
-  for (int cnt = 0; true; ++cnt) {
+  // Use AsyncResponseStream for efficient streaming
+  AsyncResponseStream *response = request->beginResponseStream("text/json");
+  response->print("[");
+  
+  bool first = true;
+  int count = 0;
+  const int MAX_ITEMS = 200; // Reduced limit
+  
+  // Only list current directory (non-recursive)
+  while (count < MAX_ITEMS) {
     File entry = dir.openNextFile();
     if (!entry) {
       break;
     }
-    if (cnt > 0) {
-      output += ',';
+    
+    if (!first) {
+      response->print(",");
     }
-    output += "{\"type\":\"";
-    output += (entry.isDirectory()) ? "dir" : "file";
-    output += "\",\"name\":\"";
-    output += entry.name();
-    output += "\"";
-    output += ",\"size\":\"";
-    output += String(entry.size());
-    output += "\"";
-    output += "}";
+    first = false;
+    
+    bool isDir = entry.isDirectory();
+    String entryName = String(entry.name());
+    
+    DEBUG_LOG("Entry: '%s' isDir=%d\n", entryName.c_str(), isDir);
+    
+    // Extract just the filename from full path
+    int lastSlash = entryName.lastIndexOf('/');
+    String displayName = (lastSlash >= 0) ? entryName.substring(lastSlash + 1) : entryName;
+    
+    // Construct full path by combining parent path with filename
+    String fullPath;
+    if (entryName.startsWith("/")) {
+      // Entry name is already a full path
+      fullPath = entryName;
+    } else {
+      // Entry name is relative, combine with parent path
+      fullPath = path;
+      if (!path.endsWith("/")) {
+        fullPath += "/";
+      }
+      fullPath += displayName;
+    }
+    
+    DEBUG_LOG("Full path: '%s'\n", fullPath.c_str());
+    
+    response->print("{\"type\":\"");
+    response->print(isDir ? "dir" : "file");
+    response->print("\",\"name\":\"");
+    response->print(displayName);
+    response->print("\",\"path\":\"");
+    response->print(fullPath);
+    response->print("\",\"size\":");
+    response->print(entry.size());
+    response->print("}");
+    
     entry.close();
+    count++;
   }
-  output += "]";
-  request->send(200, "text/json", output);
+  
+  response->print("]");
+  request->send(response);
+  
   dir.close();
   sdcontrol.relinquishControl();
 
@@ -427,3 +671,4 @@ void FSWebServer::onHttpFileUpload(AsyncWebServerRequest *request, String filena
     sdcontrol.relinquishControl();
   }
 }
+
