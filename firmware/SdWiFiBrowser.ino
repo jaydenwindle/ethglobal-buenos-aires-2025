@@ -163,174 +163,562 @@ void exitSleepMode() {
 }
 
 // Queue management functions
-void handleQueueCommand() {
-  BT.write("[QUEUE] Starting queue check...\n");
+
+// Helper struct for image files
+struct ImageFile {
+  String name;
+  time_t modTime;
+};
+
+// Helper function to check if a file is an image based on extension
+bool isImageFile(const String& filename) {
+  String lowerFilename = filename;
+  lowerFilename.toLowerCase();
+  return lowerFilename.endsWith(".jpg") || lowerFilename.endsWith(".jpeg") || 
+         lowerFilename.endsWith(".png") || lowerFilename.endsWith(".bmp");
+}
+
+// Recursive helper function to scan a directory for images
+void scanDirectoryForImages(const String& dirPath, std::vector<ImageFile>& allImages, int depth = 0) {
+  // Limit recursion depth to prevent stack overflow
+  const int MAX_DEPTH = 10;
+  if (depth > MAX_DEPTH) {
+    DEBUG_LOG("[SCAN] Max recursion depth reached at: %s\n", dirPath.c_str());
+    return;
+  }
   
-  // Ensure SD card is available
+  DEBUG_LOG("[SCAN] Scanning directory (depth %d): %s\n", depth, dirPath.c_str());
+  BT.write("[SCAN] Scanning: ");
+  BT.write(dirPath.c_str());
+  BT.write("\n");
+  
+  File dir = SD.open(dirPath.c_str());
+  if (!dir || !dir.isDirectory()) {
+    DEBUG_LOG("[SCAN] Cannot open directory: %s\n", dirPath.c_str());
+    BT.write("[SCAN] ERROR: Cannot open directory\n");
+    return;
+  }
+  
+  dir.rewindDirectory();
+  
+  while (true) {
+    File entry = dir.openNextFile();
+    if (!entry) {
+      break;
+    }
+    
+    String entryName = String(entry.name());
+    bool isDir = entry.isDirectory();
+    
+    DEBUG_LOG("[SCAN] Entry: '%s' isDir=%d\n", entryName.c_str(), isDir);
+    
+    // Construct full path
+    String fullPath;
+    if (entryName.startsWith("/")) {
+      // Entry name is already a full path
+      fullPath = entryName;
+    } else {
+      // Entry name is relative, construct full path
+      fullPath = dirPath;
+      if (!dirPath.endsWith("/")) {
+        fullPath += "/";
+      }
+      fullPath += entryName;
+    }
+    
+    DEBUG_LOG("[SCAN] Full path: '%s'\n", fullPath.c_str());
+    
+    // Extract just the filename for checking
+    int lastSlash = fullPath.lastIndexOf('/');
+    String fileName = (lastSlash >= 0) ? fullPath.substring(lastSlash + 1) : fullPath;
+    
+    // Skip macOS metadata files (._*)
+    if (fileName.startsWith("._")) {
+      DEBUG_LOG("[SCAN] Skipping metadata file: %s\n", fileName.c_str());
+      entry.close();
+      continue;
+    }
+    
+    if (isDir) {
+      // Recursively scan subdirectory
+      BT.write("[SCAN] Found subdirectory: ");
+      BT.write(fullPath.c_str());
+      BT.write("\n");
+      DEBUG_LOG("[SCAN] Recursing into: %s\n", fullPath.c_str());
+      entry.close();
+      scanDirectoryForImages(fullPath, allImages, depth + 1);
+    } else {
+      // Check if it's an image file
+      if (isImageFile(fileName)) {
+        ImageFile img;
+        img.name = fullPath;  // Store full path
+        img.modTime = entry.getLastWrite();
+        allImages.push_back(img);
+        DEBUG_LOG("[SCAN] Found image: %s (modTime: %ld)\n", fullPath.c_str(), img.modTime);
+      } else {
+        DEBUG_LOG("[SCAN] Skipping non-image file: %s\n", fileName.c_str());
+      }
+      entry.close();
+    }
+  }
+  
+  dir.close();
+}
+
+// Helper function to get all images from DCIM sorted by modification time
+bool getImagesFromDCIM(std::vector<ImageFile>& allImages) {
+  const char* dcimPath = "/DCIM";
+  
+  BT.write("[DCIM] Scanning for images recursively...\n");
+  SERIAL_ECHOLN("[DCIM] Starting recursive scan");
+  
+  // Check if DCIM folder exists
+  if (!SD.exists(dcimPath)) {
+    BT.write("{\"error\":\"DCIM folder not found\"}\n");
+    SERIAL_ECHOLN("[DCIM] ERROR: DCIM folder not found");
+    return false;
+  }
+  
+  // Recursively scan DCIM and all subdirectories
+  scanDirectoryForImages(dcimPath, allImages);
+  
+  BT.write("[DCIM] Found ");
+  BT.write(String(allImages.size()).c_str());
+  BT.write(" images total\n");
+  SERIAL_ECHO("[DCIM] Found ");
+  SERIAL_ECHO(String(allImages.size()).c_str());
+  SERIAL_ECHOLN(" images");
+  
+  if (allImages.size() == 0) {
+    BT.write("{\"error\":\"No images found in DCIM\"}\n");
+    SERIAL_ECHOLN("[DCIM] ERROR: No images found");
+    return false;
+  }
+  
+  // Sort by modification time (oldest first)
+  BT.write("[DCIM] Sorting by modification time...\n");
+  std::sort(allImages.begin(), allImages.end(), [](const ImageFile& a, const ImageFile& b) {
+    return a.modTime < b.modTime;
+  });
+  
+  BT.write("[DCIM] Scan complete\n");
+  SERIAL_ECHOLN("[DCIM] Scan complete");
+  
+  return true;
+}
+
+// Helper function to ensure SD card is initialized
+bool ensureSDInitialized() {
   if (!sdcontrol.wehaveControl()) {
-    BT.write("[QUEUE] SD card not initialized, setting up...\n");
+    BT.write("[SD] SD card not initialized, setting up...\n");
     
     // Initialize SD control if not already done
     if (!serverStarted) {
-      BT.write("[QUEUE] Running first-time SD setup...\n");
+      BT.write("[SD] Running first-time SD setup...\n");
       sdcontrol.setup();
       delay(100);
     }
     
-    BT.write("[QUEUE] Taking SD card control...\n");
+    BT.write("[SD] Taking SD card control...\n");
     sdcontrol.takeControl();
     delay(200); // Give SD card time to initialize
     
     if (!sdcontrol.wehaveControl()) {
       BT.write("{\"error\":\"SD card not available - initialization failed\"}\n");
-      return;
+      return false;
     }
-    BT.write("[QUEUE] SD card control acquired\n");
+    BT.write("[SD] SD card control acquired\n");
   } else {
-    BT.write("[QUEUE] SD card already initialized\n");
+    BT.write("[SD] SD card already initialized\n");
+  }
+  return true;
+}
+
+// Helper function to write queue.json file (pretty-printed)
+bool writeQueueJSON(const char* queuePath, const std::vector<ImageFile>& queuedImages) {
+  File queueFile = SD.open(queuePath, FILE_WRITE);
+  if (!queueFile) {
+    BT.write("[QUEUE] ERROR: Failed to open queue.json for writing\n");
+    SERIAL_ECHOLN("[QUEUE] ERROR: Failed to open queue.json for writing");
+    return false;
   }
   
-  const char* queuePath = "/queue.txt";
-  const char* dcimPath = "/DCIM";
+  // Write pretty-printed JSON structure
+  queueFile.print("{\n");
+  queueFile.print("  \"count\": ");
+  queueFile.print(queuedImages.size());
+  queueFile.print(",\n");
+  queueFile.print("  \"images\": {\n");
   
-  // Check if DCIM folder exists
-  if (!SD.exists(dcimPath)) {
-    BT.write("{\"error\":\"DCIM folder not found\"}\n");
+  for (size_t i = 0; i < queuedImages.size(); i++) {
+    queueFile.print("    \"");
+    queueFile.print(queuedImages[i].name);
+    queueFile.print("\": {\n");
+    queueFile.print("      \"date\": ");
+    queueFile.print(queuedImages[i].modTime);
+    queueFile.print("\n");
+    queueFile.print("    }");
+    if (i < queuedImages.size() - 1) {
+      queueFile.print(",");
+    }
+    queueFile.print("\n");
+  }
+  
+  queueFile.print("  }\n");
+  queueFile.print("}\n");
+  queueFile.close();
+  
+  return true;
+}
+
+// Helper function to read queue.json file (handles both compact and pretty-printed)
+bool readQueueJSON(const char* queuePath, std::vector<ImageFile>& queuedImages) {
+  File queueFile = SD.open(queuePath, FILE_READ);
+  if (!queueFile) {
+    DEBUG_LOG("[readQueueJSON] Failed to open file\n");
+    return false;
+  }
+  
+  // Read entire file into string
+  String jsonContent = "";
+  while (queueFile.available()) {
+    jsonContent += (char)queueFile.read();
+  }
+  queueFile.close();
+  
+  DEBUG_LOG("[readQueueJSON] File size: %d bytes\n", jsonContent.length());
+  DEBUG_LOG("[readQueueJSON] Content preview: %.100s...\n", jsonContent.c_str());
+  
+  // Parse JSON manually (simple parser for our specific format)
+  // Format: {"count":X,"images":{"path":{"date":timestamp},...}}
+  // Handles both compact and pretty-printed with whitespace
+  
+  int imagesStart = jsonContent.indexOf("\"images\"");
+  if (imagesStart == -1) {
+    DEBUG_LOG("[readQueueJSON] 'images' key not found\n");
+    return false;
+  }
+  
+  // Find the opening brace after "images"
+  imagesStart = jsonContent.indexOf("{", imagesStart);
+  if (imagesStart == -1) {
+    DEBUG_LOG("[readQueueJSON] Opening brace after 'images' not found\n");
+    return false;
+  }
+  imagesStart++; // Skip past the opening brace
+  
+  // Find the matching closing brace (second to last '}' in file)
+  int imagesEnd = jsonContent.lastIndexOf("}");
+  if (imagesEnd == -1) {
+    DEBUG_LOG("[readQueueJSON] Closing brace not found\n");
+    return false;
+  }
+  // Go back one more closing brace (for the images object)
+  imagesEnd = jsonContent.lastIndexOf("}", imagesEnd - 1);
+  
+  String imagesSection = jsonContent.substring(imagesStart, imagesEnd);
+  DEBUG_LOG("[readQueueJSON] Images section length: %d\n", imagesSection.length());
+  
+  // Parse each image entry
+  int pos = 0;
+  int imageCount = 0;
+  while (pos < imagesSection.length()) {
+    // Find next quoted string (image path)
+    int pathStart = imagesSection.indexOf("\"", pos);
+    if (pathStart == -1) break;
+    pathStart++;
+    
+    int pathEnd = imagesSection.indexOf("\"", pathStart);
+    if (pathEnd == -1) break;
+    
+    String imagePath = imagesSection.substring(pathStart, pathEnd);
+    
+    // Skip if this is the "date" key
+    if (imagePath == "date") {
+      pos = pathEnd + 1;
+      continue;
+    }
+    
+    // Find the date value after this path
+    int dateStart = imagesSection.indexOf("\"date\"", pathEnd);
+    if (dateStart == -1) {
+      DEBUG_LOG("[readQueueJSON] 'date' key not found for image: %s\n", imagePath.c_str());
+      break;
+    }
+    
+    // Find the colon after "date"
+    dateStart = imagesSection.indexOf(":", dateStart);
+    if (dateStart == -1) break;
+    dateStart++; // Skip past the colon
+    
+    // Find the next closing brace (end of date value)
+    int dateEnd = imagesSection.indexOf("}", dateStart);
+    if (dateEnd == -1) break;
+    
+    String dateStr = imagesSection.substring(dateStart, dateEnd);
+    dateStr.trim();
+    
+    // Remove any trailing newlines or whitespace
+    dateStr.replace("\n", "");
+    dateStr.replace("\r", "");
+    dateStr.trim();
+    
+    ImageFile img;
+    img.name = imagePath;
+    img.modTime = dateStr.toInt();
+    queuedImages.push_back(img);
+    imageCount++;
+    
+    DEBUG_LOG("[readQueueJSON] Parsed image #%d: %s (date: %ld)\n", imageCount, imagePath.c_str(), img.modTime);
+    
+    pos = dateEnd + 1;
+  }
+  
+  DEBUG_LOG("[readQueueJSON] Successfully parsed %d images\n", imageCount);
+  return imageCount > 0;
+}
+
+// QUEUE command - just display the current queue
+void handleQueueCommand() {
+  BT.write("[QUEUE] Displaying current queue...\n");
+  SERIAL_ECHOLN("[QUEUE] Command received");
+  
+  // Ensure SD card is available
+  if (!ensureSDInitialized()) {
     return;
   }
   
-  // Get list of image files in DCIM (sorted by modification time)
-  File dcimDir = SD.open(dcimPath);
-  if (!dcimDir || !dcimDir.isDirectory()) {
-    BT.write("{\"error\":\"Cannot open DCIM folder\"}\n");
+  const char* queuePath = "/queue.json";
+  
+  // Check if queue.json exists
+  if (!SD.exists(queuePath)) {
+    BT.write("{\"error\":\"Queue does not exist. Use QUEUE UPDATE to create it.\"}\n");
+    SERIAL_ECHOLN("[QUEUE] Queue file does not exist");
     return;
   }
   
-  // Collect all image files with their timestamps
-  struct ImageFile {
-    String name;
-    time_t modTime;
-  };
+  // Read and display the queue file contents
+  BT.write("[QUEUE] Reading queue.json...\n");
   
+  // Read existing queue
+  std::vector<ImageFile> queuedImages;
+  if (!readQueueJSON(queuePath, queuedImages)) {
+    BT.write("{\"error\":\"Failed to read queue.json\"}\n");
+    SERIAL_ECHOLN("[QUEUE] ERROR: Failed to read queue.json");
+    return;
+  }
+  
+  // Pretty print the JSON with buffering to avoid Bluetooth overflow
+  BT.write("{\n");
+  BT.write("  \"count\": ");
+  BT.write(String(queuedImages.size()).c_str());
+  BT.write(",\n");
+  BT.write("  \"images\": {\n");
+  delay(10); // Small delay to let Bluetooth buffer clear
+  
+  SERIAL_ECHO("[QUEUE] Sending ");
+  SERIAL_ECHO(String(queuedImages.size()).c_str());
+  SERIAL_ECHOLN(" images...");
+  
+  for (size_t i = 0; i < queuedImages.size(); i++) {
+    // Build the entry as a string first
+    String entry = "    \"";
+    entry += queuedImages[i].name;
+    entry += "\": {\n      \"date\": ";
+    entry += String(queuedImages[i].modTime);
+    entry += "\n    }";
+    if (i < queuedImages.size() - 1) {
+      entry += ",";
+    }
+    entry += "\n";
+    
+    // Send the complete entry
+    BT.write(entry.c_str());
+    
+    // Add a small delay every 5 entries to prevent buffer overflow
+    if ((i + 1) % 5 == 0) {
+      delay(20);
+      SERIAL_ECHO("[QUEUE] Sent ");
+      SERIAL_ECHO(String(i + 1).c_str());
+      SERIAL_ECHO("/");
+      SERIAL_ECHOLN(String(queuedImages.size()).c_str());
+    }
+  }
+  
+  BT.write("  }\n");
+  BT.write("}\n");
+  delay(10);
+  
+  BT.write("[QUEUE] Complete\n");
+  SERIAL_ECHOLN("[QUEUE] Complete");
+}
+
+// Unified function to update/reset queue with all new images
+void updateQueueWithAllImages(bool isReset) {
+  const char* cmdName = isReset ? "QUEUE RESET" : "QUEUE UPDATE";
+  
+  BT.write("[");
+  BT.write(cmdName);
+  BT.write("] Starting...\n");
+  SERIAL_ECHO("[");
+  SERIAL_ECHO(cmdName);
+  SERIAL_ECHOLN("] Command received");
+  
+  // Ensure SD card is available
+  if (!ensureSDInitialized()) {
+    return;
+  }
+  
+  const char* queuePath = "/queue.json";
+  
+  // If RESET, delete existing queue
+  if (isReset && SD.exists(queuePath)) {
+    BT.write("[");
+    BT.write(cmdName);
+    BT.write("] Deleting existing queue.json...\n");
+    SERIAL_ECHO("[");
+    SERIAL_ECHO(cmdName);
+    SERIAL_ECHOLN("] Deleting existing queue.json");
+    
+    if (SD.remove(queuePath)) {
+      BT.write("[");
+      BT.write(cmdName);
+      BT.write("] Old queue.json deleted\n");
+      SERIAL_ECHO("[");
+      SERIAL_ECHO(cmdName);
+      SERIAL_ECHOLN("] Old queue deleted");
+    } else {
+      BT.write("[");
+      BT.write(cmdName);
+      BT.write("] WARNING: Failed to delete old queue.json\n");
+      SERIAL_ECHO("[");
+      SERIAL_ECHO(cmdName);
+      SERIAL_ECHOLN("] ERROR: Failed to delete old queue");
+    }
+  }
+  
+  // Get all images from DCIM (recursively scans all subdirectories)
   std::vector<ImageFile> allImages;
-  File entry = dcimDir.openNextFile();
-  while (entry) {
-    if (!entry.isDirectory()) {
-      String filename = String(entry.name());
-      filename.toLowerCase();
-      // Check for image extensions
-      if (filename.endsWith(".jpg") || filename.endsWith(".jpeg") || 
-          filename.endsWith(".png") || filename.endsWith(".bmp")) {
-        ImageFile img;
-        img.name = String(entry.name());
-        img.modTime = entry.getLastWrite();
-        allImages.push_back(img);
+  if (!getImagesFromDCIM(allImages)) {
+    return;
+  }
+  
+  // Read existing queue if it exists (and not reset)
+  std::vector<ImageFile> queuedImages;
+  int addedCount = 0;
+  bool queueExists = !isReset && SD.exists(queuePath);
+  
+  if (queueExists) {
+    BT.write("[");
+    BT.write(cmdName);
+    BT.write("] Reading existing queue.json...\n");
+    SERIAL_ECHO("[");
+    SERIAL_ECHO(cmdName);
+    SERIAL_ECHOLN("] Reading existing queue");
+    
+    if (readQueueJSON(queuePath, queuedImages)) {
+      BT.write("[");
+      BT.write(cmdName);
+      BT.write("] Existing queue has ");
+      BT.write(String(queuedImages.size()).c_str());
+      BT.write(" images\n");
+      SERIAL_ECHO("[");
+      SERIAL_ECHO(cmdName);
+      SERIAL_ECHO("] Existing queue has ");
+      SERIAL_ECHO(String(queuedImages.size()).c_str());
+      SERIAL_ECHOLN(" images");
+    } else {
+      BT.write("[");
+      BT.write(cmdName);
+      BT.write("] WARNING: Failed to parse existing queue\n");
+      SERIAL_ECHO("[");
+      SERIAL_ECHO(cmdName);
+      SERIAL_ECHOLN("] WARNING: Failed to parse existing queue");
+      queuedImages.clear();
+      queueExists = false;
+    }
+  }
+  
+  // Add all new images not already in queue
+  for (const auto& img : allImages) {
+    bool inQueue = false;
+    for (const auto& queued : queuedImages) {
+      if (queued.name == img.name) {
+        inQueue = true;
+        break;
       }
     }
-    entry.close();
-    entry = dcimDir.openNextFile();
+    if (!inQueue) {
+      queuedImages.push_back(img);
+      addedCount++;
+      DEBUG_LOG("[%s] Added: %s (date: %ld)\n", cmdName, img.name.c_str(), img.modTime);
+    }
   }
-  dcimDir.close();
   
   // Sort by modification time (oldest first)
-  std::sort(allImages.begin(), allImages.end(), [](const ImageFile& a, const ImageFile& b) {
+  std::sort(queuedImages.begin(), queuedImages.end(), [](const ImageFile& a, const ImageFile& b) {
     return a.modTime < b.modTime;
   });
   
-  BT.write("[QUEUE] Found ");
-  BT.write(String(allImages.size()).c_str());
-  BT.write(" images in DCIM\n");
-  
-  // Check if queue.txt exists
-  bool queueExists = SD.exists(queuePath);
-  std::vector<String> queuedImages;
-  int addedCount = 0;
-  
-  if (queueExists) {
-    BT.write("[QUEUE] Reading existing queue.txt...\n");
-    // Read existing queue
-    File queueFile = SD.open(queuePath, FILE_READ);
-    if (queueFile) {
-      while (queueFile.available()) {
-        String line = queueFile.readStringUntil('\n');
-        line.trim();
-        if (line.length() > 0) {
-          queuedImages.push_back(line);
-        }
-      }
-      queueFile.close();
-    }
-    
-    BT.write("[QUEUE] Existing queue has ");
-    BT.write(String(queuedImages.size()).c_str());
-    BT.write(" images\n");
-    
-    // Check for new images not in queue
-    for (const auto& img : allImages) {
-      bool inQueue = false;
-      for (const auto& queued : queuedImages) {
-        if (queued == img.name) {
-          inQueue = true;
-          break;
-        }
-      }
-      if (!inQueue) {
-        queuedImages.push_back(img.name);
-        addedCount++;
-      }
-    }
-    
-    if (addedCount > 0) {
-      BT.write("[QUEUE] Adding ");
-      BT.write(String(addedCount).c_str());
-      BT.write(" new images to queue\n");
-      
-      // Update queue.txt with new images
-      File queueFile = SD.open(queuePath, FILE_WRITE);
-      if (queueFile) {
-        for (const auto& img : queuedImages) {
-          queueFile.println(img);
-        }
-        queueFile.close();
-      }
-    }
+  BT.write("[");
+  BT.write(cmdName);
+  BT.write("] ");
+  if (addedCount > 0) {
+    BT.write("Added ");
+    BT.write(String(addedCount).c_str());
+    BT.write(" new images. ");
   } else {
-    BT.write("[QUEUE] Creating new queue.txt with 5 oldest images...\n");
-    // Create new queue with 5 oldest images
-    int count = min(5, (int)allImages.size());
-    File queueFile = SD.open(queuePath, FILE_WRITE);
-    if (queueFile) {
-      for (int i = 0; i < count; i++) {
-        queueFile.println(allImages[i].name);
-        queuedImages.push_back(allImages[i].name);
-      }
-      queueFile.close();
-      addedCount = count;
-    } else {
-      BT.write("{\"error\":\"Failed to create queue.txt\"}\n");
-      return;
-    }
+    BT.write("No new images to add. ");
+  }
+  BT.write("Total: ");
+  BT.write(String(queuedImages.size()).c_str());
+  BT.write("\n");
+  
+  SERIAL_ECHO("[");
+  SERIAL_ECHO(cmdName);
+  SERIAL_ECHO("] Added ");
+  SERIAL_ECHO(String(addedCount).c_str());
+  SERIAL_ECHO(" new images, total: ");
+  SERIAL_ECHOLN(String(queuedImages.size()).c_str());
+  
+  // Write updated queue
+  if (!writeQueueJSON(queuePath, queuedImages)) {
+    BT.write("{\"error\":\"Failed to write queue.json\"}\n");
+    return;
   }
   
-  // Build JSON response
+  // Build response
   BT.write("{");
+  if (isReset) {
+    BT.write("\"reset\":true,");
+  }
   BT.write("\"count\":");
   BT.write(String(queuedImages.size()).c_str());
   BT.write(",\"added\":");
   BT.write(String(addedCount).c_str());
-  BT.write(",\"images\":[");
+  BT.write(",\"images\":{");
   
   for (size_t i = 0; i < queuedImages.size(); i++) {
+    if (i > 0) BT.write(",");
     BT.write("\"");
-    BT.write(queuedImages[i].c_str());
-    BT.write("\"");
-    if (i < queuedImages.size() - 1) {
-      BT.write(",");
-    }
+    BT.write(queuedImages[i].name.c_str());
+    BT.write("\":{\"date\":");
+    BT.write(String(queuedImages[i].modTime).c_str());
+    BT.write("}");
   }
   
-  BT.write("]}\n");
-  BT.write("[QUEUE] Complete\n");
+  BT.write("}}\n");
+  BT.write("[");
+  BT.write(cmdName);
+  BT.write("] Complete\n");
+  SERIAL_ECHO("[");
+  SERIAL_ECHO(cmdName);
+  SERIAL_ECHOLN("] Complete");
+}
+
+// QUEUE UPDATE command - update queue with all new images
+void handleQueueUpdateCommand() {
+  updateQueueWithAllImages(false);
 }
 
 void sendStatusReport() {
@@ -474,9 +862,21 @@ void handleBluetoothCommand(String cmd) {
     return;
   }
   
-  // QUEUE command works in both sleep and awake modes
+  // QUEUE command works in both sleep and awake modes - just displays current queue
   if (cmd == "QUEUE") {
     handleQueueCommand();
+    return;
+  }
+  
+  // QUEUE UPDATE command - updates queue with new images
+  if (cmd == "QUEUE UPDATE") {
+    handleQueueUpdateCommand();
+    return;
+  }
+  
+  // QUEUE RESET command - recreate queue.json from scratch with all images
+  if (cmd == "QUEUE RESET") {
+    updateQueueWithAllImages(true);
     return;
   }
   
@@ -732,7 +1132,7 @@ void handleBluetoothCommand(String cmd) {
   
   // If in sleep mode, only accept WAKE, STATUS, QUEUE, and SD commands
   if (sleepMode) {
-    BT.write("Device is sleeping. Available commands: WAKE, STATUS, QUEUE, SD ON, SD OFF, SD LIST\n");
+    BT.write("Device is sleeping. Available commands: WAKE, STATUS, QUEUE, QUEUE UPDATE, QUEUE RESET, SD ON, SD OFF, SD LIST\n");
     return;
   }
   
@@ -740,7 +1140,9 @@ void handleBluetoothCommand(String cmd) {
     BT.write("Available commands:\n");
     BT.write("  HELP - Show this help\n");
     BT.write("  STATUS - Show device status\n");
-    BT.write("  QUEUE - Check/update image processing queue\n");
+    BT.write("  QUEUE - Display current queue (queue.json)\n");
+    BT.write("  QUEUE UPDATE - Add all new images to queue\n");
+    BT.write("  QUEUE RESET - Delete queue and add all images\n");
     BT.write("  SD ON - Initialize and mount SD card\n");
     BT.write("  SD OFF - Unmount and release SD card\n");
     BT.write("  SD LIST [path] - List files in directory (default: /)\n");
