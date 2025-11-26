@@ -10,10 +10,6 @@
 #ifdef ESP32
 #include <WiFi.h>
 #include <AsyncTCP.h>
-// Compatibility for ESP32 Core 3.x
-#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
-#include <NetworkInterface.h>
-#endif
 #elif defined(ESP8266)
 #include <ESP8266WiFi.h>
 #include <ESPAsyncTCP.h>
@@ -23,7 +19,7 @@
 #include <ESPAsyncWebServer.h>
 #include <SPIFFS.h>
 #include <Ticker.h>
-// #include <ArduinoOTA.h>  // Not used, excluded in platformio.ini
+// #include <ArduinoOTA.h>
 #include <ArduinoJson.h>
 
 #define CONNECTION_LED -1 // Connection LED pin (Built in). -1 to disable
@@ -77,7 +73,6 @@ protected:
     void onHttpWifiStatus(AsyncWebServerRequest *request);
     void onHttpWifiAP(AsyncWebServerRequest *request);
     void onHttpWifiList(AsyncWebServerRequest *request);
-    void onHttpBTStatus(AsyncWebServerRequest *request);
 };
 
 extern FSWebServer server;

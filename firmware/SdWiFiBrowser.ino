@@ -535,9 +535,77 @@ void handleBluetoothCommand(String cmd) {
     return;
   }
   
+  // SD LIST command - list files in a directory
+  if (cmd.startsWith("SD LIST")) {
+    // Extract path parameter (default to "/" if not provided)
+    String path = "/";
+    if (cmd.length() > 8) {
+      path = cmd.substring(8);
+      path.trim();
+    }
+    
+    // Ensure SD card is available
+    if (!sdcontrol.wehaveControl()) {
+      BT.write("[SD LIST] SD card not initialized\n");
+      BT.write("Use 'SD ON' command first\n");
+      return;
+    }
+    
+    // Check if path exists
+    if (path != "/" && !SD_OBJ.exists(path.c_str())) {
+      BT.write("{\"error\":\"Path not found\"}\n");
+      return;
+    }
+    
+    // Open directory
+    File dir = SD_OBJ.open(path.c_str());
+    if (!dir) {
+      BT.write("{\"error\":\"Cannot open path\"}\n");
+      return;
+    }
+    
+    if (!dir.isDirectory()) {
+      dir.close();
+      BT.write("{\"error\":\"Path is not a directory\"}\n");
+      return;
+    }
+    
+    dir.rewindDirectory();
+    
+    // Build JSON output similar to onHttpList
+    BT.write("[");
+    bool first = true;
+    
+    while (true) {
+      File entry = dir.openNextFile();
+      if (!entry) {
+        break;
+      }
+      
+      if (!first) {
+        BT.write(",");
+      }
+      first = false;
+      
+      BT.write("{\"type\":\"");
+      BT.write(entry.isDirectory() ? "dir" : "file");
+      BT.write("\",\"name\":\"");
+      BT.write(entry.name());
+      BT.write("\",\"size\":\"");
+      BT.write(String(entry.size()).c_str());
+      BT.write("\"}");
+      
+      entry.close();
+    }
+    
+    BT.write("]\n");
+    dir.close();
+    return;
+  }
+  
   // If in sleep mode, only accept WAKE, STATUS, QUEUE, and SD commands
   if (sleepMode) {
-    BT.write("Device is sleeping. Available commands: WAKE, STATUS, QUEUE, SD ON, SD OFF\n");
+    BT.write("Device is sleeping. Available commands: WAKE, STATUS, QUEUE, SD ON, SD OFF, SD LIST\n");
     return;
   }
   
@@ -548,6 +616,7 @@ void handleBluetoothCommand(String cmd) {
     BT.write("  QUEUE - Check/update image processing queue\n");
     BT.write("  SD ON - Initialize and mount SD card\n");
     BT.write("  SD OFF - Unmount and release SD card\n");
+    BT.write("  SD LIST [path] - List files in directory (default: /)\n");
     BT.write("  SLEEP - Enter low power sleep mode\n");
     BT.write("  WAKE - Wake from sleep mode\n");
     BT.write("  WIFI ON - Enable WiFi\n");
